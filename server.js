@@ -516,7 +516,8 @@ ${parsed.html}
                   .from("clients")
                   .select("id")
                   .eq("user_id", mail.user_id)
-                  .or(`email.eq.${mail.from_email},email2.eq.${mail.from_email}`)
+                  .eq('email', mail.from_email)
+                  .limit(1)
                   .maybeSingle();
 
                 if (!matchingClient) continue;
@@ -535,7 +536,8 @@ ${parsed.html}
                   .from("clients")
                   .select("id")
                   .eq("user_id", mail.user_id)
-                  .or(`email.eq.${mail.from_email},email2.eq.${mail.from_email}`)
+                  .eq('email', mail.from_email)
+                  .limit(1)
                   .maybeSingle();
 
                 if (existingClient) continue;
