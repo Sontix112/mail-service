@@ -721,6 +721,68 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                   const nextAction = connection.routine_actions;
 
+                  // KI-Analyse: Welche Tools braucht der Nutzer für diese Antwort?
+                  let detectedTools = [];
+                  try {
+                    const cleanReplyText = (mail.body_text ?? "")
+                      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+                      .replace(/\r\n/g, "\n")
+                      .replace(/\r/g, "\n");
+
+                    let toolAiResponse;
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                      toolAiResponse = await fetch("https://api.anthropic.com/v1/messages", {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                          "x-api-key": process.env.ANTHROPIC_API_KEY,
+                          "anthropic-version": "2023-06-01",
+                        },
+                        body: JSON.stringify({
+                          model: "claude-haiku-4-5-20251001",
+                          max_tokens: 256,
+                          messages: [
+                            {
+                              role: "user",
+                              content: `Du bist ein Assistent für einen Fotografen. Analysiere diese Kunden-Antwort-Mail und entscheide, welche der folgenden Tools der Fotograf für seine Antwort benötigt.
+
+Verfügbare Tools:
+- price_list: Kunde fragt nach Preisen, Paketen, Kosten oder einer Preisliste
+- appointment_suggestion: Kunde fragt nach Terminen, Verfügbarkeit oder möchte ein Kennenlernen/Meeting vereinbaren
+- offer: Kunde ist interessiert und möchte ein konkretes Angebot oder hat grundsätzlich zugesagt
+
+Antworte NUR mit einem JSON-Array der relevanten Tool-Keys. Wenn kein Tool passt, antworte mit einem leeren Array.
+Beispiele: ["price_list"] oder ["appointment_suggestion","offer"] oder []
+
+Betreff: ${mail.subject}
+Nachricht:
+${cleanReplyText}`,
+                            },
+                          ],
+                        }),
+                      });
+                      if (toolAiResponse.status !== 529) break;
+                      console.log(`Tool detection: Anthropic overloaded, retry ${attempt + 1}...`);
+                      await new Promise(r => setTimeout(r, 2000));
+                    }
+
+                    const toolAiData = await toolAiResponse.json();
+                    const rawToolText = (toolAiData.content?.[0]?.text ?? "").trim();
+                    console.log("Tool detection raw response:", rawToolText);
+
+                    const arrayMatch = rawToolText.match(/\[[\s\S]*\]/);
+                    if (arrayMatch) {
+                      const parsed = JSON.parse(arrayMatch[0]);
+                      if (Array.isArray(parsed)) {
+                        const validTools = ["price_list", "appointment_suggestion", "offer"];
+                        detectedTools = parsed.filter(t => validTools.includes(t));
+                      }
+                    }
+                  } catch (e) {
+                    console.error("Tool detection error:", e.message);
+                    // detectedTools bleibt [], Action wird trotzdem erstellt
+                  }
+
                   await supabaseAdmin
                     .from("job_actions")
                     .insert({
@@ -736,10 +798,13 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                       status: nextAction?.default_job_status ?? "active",
                       sort_order: nextAction?.sort_hint ?? 2,
                       activated_at: new Date().toISOString(),
-                      payload: { mail_message_id: mail.id },
+                      payload: {
+                        mail_message_id: mail.id,
+                        detected_tools: detectedTools,
+                      },
                     });
 
-                  console.log(`wait_for_reply ${action.id} completed, answer_reply created for ${clientName}`);
+                  console.log(`wait_for_reply ${action.id} completed, answer_reply created for ${clientName}, detected_tools: ${JSON.stringify(detectedTools)}`);
                 }
               }
             }
