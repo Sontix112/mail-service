@@ -528,7 +528,58 @@ ${parsed.html}
                   .eq("id", mail.id);
               }
 
-              // Erster Loop — KI-Analyse für unbekannte Absender
+              // Zweiter Loop — body_clean per KI extrahieren
+              for (const mail of insertedMails) {
+                const rawText = mail.body_text ?? "";
+                if (!rawText.trim()) continue;
+
+                const cleanInput = rawText
+                  .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+                  .replace(/\r\n/g, "\n")
+                  .replace(/\r/g, "\n");
+
+                try {
+                  let cleanResponse;
+                  for (let attempt = 0; attempt < 3; attempt++) {
+                    cleanResponse = await fetch("https://api.anthropic.com/v1/messages", {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        "x-api-key": process.env.ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                      },
+                      body: JSON.stringify({
+                        model: "claude-haiku-4-5-20251001",
+                        max_tokens: 1024,
+                        messages: [{
+                          role: "user",
+                          content: `Extrahiere aus dieser E-Mail nur den eigentlichen neuen Text der aktuellen Nachricht. Entferne vollständig: zitierte Vorgänger-Mails (Zeilen die mit > beginnen), automatische Signaturen, "Von:", "Gesendet:", "An:", "Betreff:" Header-Blöcke von zitierten Mails, und typische Trennlinien wie "---" oder "___" die Zitate einleiten. Gib nur den bereinigten Text zurück, ohne Erklärung, ohne Anführungszeichen, ohne Markdown.
+
+E-Mail:
+${cleanInput.slice(0, 3000)}`
+                        }],
+                      }),
+                    });
+                    if (cleanResponse.status !== 529) break;
+                    await new Promise(r => setTimeout(r, 2000));
+                  }
+
+                  const cleanData = await cleanResponse.json();
+                  const bodyClean = cleanData.content?.[0]?.text?.trim() ?? null;
+
+                  if (bodyClean) {
+                    await supabaseAdmin
+                      .from("mail_messages")
+                      .update({ body_clean: bodyClean })
+                      .eq("id", mail.id);
+                    console.log(`body_clean set for mail ${mail.id}`);
+                  }
+                } catch (e) {
+                  console.error(`body_clean error for mail ${mail.id}:`, e.message);
+                }
+              }
+
+              // Dritter Loop — KI-Analyse für unbekannte Absender
               for (const mail of insertedMails) {
                 if (mail.in_reply_to_message_id) continue;
 
