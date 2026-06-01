@@ -1635,8 +1635,9 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
         const toolResults = [];
         for (const block of content) {
           if (block.type !== "tool_use") continue;
-          console.log(`ai-compose: calling tool ${block.name}`, block.input);
+          console.log(`ai-compose: calling tool ${block.name}`, JSON.stringify(block.input));
           const result = await executeTool(block.name, block.input);
+          console.log(`ai-compose: tool result ${block.name}:`, JSON.stringify(result));
           toolResults.push({
             type: "tool_result",
             tool_use_id: block.id,
