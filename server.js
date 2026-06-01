@@ -1508,7 +1508,7 @@ app.post("/ai-compose", async (req, res) => {
           .from("calendar_events")
           .select("title, start_at, end_at, all_day, all_day_start_date, all_day_end_date, status")
           .eq("user_id", user_id)
-          .in("status", ["confirmed", "tentative"])
+          .not("status", "in", '("declined","cancelled")')
           .gte("start_at", input.from)
           .lte("start_at", input.to + "T23:59:59Z")
           .order("start_at");
