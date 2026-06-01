@@ -1552,15 +1552,33 @@ app.post("/ai-compose", async (req, res) => {
             typeof d === "number" ? toJsWeekday(d) : ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"].indexOf(d)
           );
           if (ruleJsDays.includes(jsDay) && !busyDates.has(dateStr)) {
-            // Uhrzeit: Mitte des Bürozeitfensters
+            // Frühest mögliche Uhrzeit in der Bürozeit
             const fromH = parseInt((rule.from ?? "08:00").split(":")[0]);
-            const toH = parseInt((rule.to ?? "10:00").split(":")[0]);
-            const midH = Math.floor((fromH + toH) / 2);
-            const timeStr = `${String(midH).padStart(2,"0")}:00`;
-            // Datum formatieren: DD.MM.YYYY
-            const [y, m, d2] = dateStr.split("-");
-            slots.push(`${d2}.${m}.${y} ${timeStr}`);
-            break;
+            const fromMin = parseInt((rule.from ?? "08:00").split(":")[1] ?? "0");
+            const slotStart = fromH * 60 + fromMin;
+            const slotEnd = slotStart + 60; // mind. 1 Stunde frei danach
+
+            // Prüfe zeitgenaue Events auf Überlappung
+            let blocked = false;
+            for (const e of (timedEvents ?? [])) {
+              if (!e.start_at) continue;
+              if (!e.start_at.startsWith(dateStr)) continue;
+              const eStartH = parseInt(e.start_at.split("T")[1]?.split(":")[0] ?? "0");
+              const eStartMin = parseInt(e.start_at.split("T")[1]?.split(":")[1] ?? "0");
+              const eStart = eStartH * 60 + eStartMin;
+              // Blockiert wenn Event innerhalb der nächsten Stunde nach slotStart beginnt
+              if (eStart >= slotStart && eStart < slotEnd) {
+                blocked = true;
+                break;
+              }
+            }
+
+            if (!blocked) {
+              const timeStr = `${String(fromH).padStart(2,"0")}:${String(fromMin).padStart(2,"0")}`;
+              const [y, m, d2] = dateStr.split("-");
+              slots.push(`${d2}.${m}.${y} ${timeStr}`);
+              break;
+            }
           }
         }
         cursor.setDate(cursor.getDate() + 1);
