@@ -1547,6 +1547,8 @@ app.post("/ai-compose", async (req, res) => {
 
 WICHTIG: Schlage NUR Termine vor die in der Zukunft liegen. Der früheste mögliche Tag ist morgen (${tomorrow}). Heute (${today}) darf NICHT vorgeschlagen werden, auch wenn noch Bürozeit übrig ist.
 
+Wochentag-Kodierung in den Bürozeiten: 1=Montag, 2=Dienstag, 3=Mittwoch, 4=Donnerstag, 5=Freitag, 6=Samstag, 7=Sonntag.
+
 Aufgabe: ${task || "Schreibe eine freundliche, professionelle E-Mail-Antwort auf Deutsch."}
 
 ${mail_history ? `Bisheriger Mailverkehr:\n${mail_history}` : ""}
