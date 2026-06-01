@@ -1441,6 +1441,188 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
   }
 });
 
+// ── /ai-compose ─────────────────────────────────────────────────────────────
+// Schreibt eine Mail-Antwort mit Hilfe der KI und Tool Use.
+// Body: { user_id, job_id, client_id, task, mail_history }
+app.post("/ai-compose", async (req, res) => {
+  try {
+    const { user_id, job_id, client_id, task, mail_history } = req.body;
+    if (!user_id) return res.status(400).json({ error: "user_id required" });
+
+    // ── Tool-Definitionen ────────────────────────────────────────────────────
+    const tools = [
+      {
+        name: "get_office_hours",
+        description: "Gibt die Bürozeiten des Nutzers zurück (Wochentage + Von/Bis-Zeiten).",
+        input_schema: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "get_calendar_events",
+        description: "Gibt Kalender-Termine des Nutzers zurück die Verfügbarkeit blockieren. Nutze from/to im ISO-Format (YYYY-MM-DD).",
+        input_schema: {
+          type: "object",
+          properties: {
+            from: { type: "string", description: "Startdatum YYYY-MM-DD" },
+            to:   { type: "string", description: "Enddatum YYYY-MM-DD" },
+          },
+          required: ["from", "to"],
+        },
+      },
+      {
+        name: "get_client_info",
+        description: "Gibt Name, E-Mail und Notizen zum Kunden zurück.",
+        input_schema: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "get_job_info",
+        description: "Gibt Details zum aktuellen Job zurück (Titel, Datum, Notizen).",
+        input_schema: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+    ];
+
+    // ── Tool-Implementierungen ───────────────────────────────────────────────
+    async function executeTool(name, input) {
+      if (name === "get_office_hours") {
+        const { data } = await supabaseAdmin
+          .from("user_settings")
+          .select("office_hours")
+          .eq("user_id", user_id)
+          .maybeSingle();
+        return data?.office_hours ?? [];
+      }
+
+      if (name === "get_calendar_events") {
+        const { data } = await supabaseAdmin
+          .from("calendar_events")
+          .select("title, start_at, end_at, all_day, all_day_start_date, all_day_end_date")
+          .eq("user_id", user_id)
+          .eq("blocks_availability", true)
+          .gte("start_at", input.from)
+          .lte("start_at", input.to + "T23:59:59Z")
+          .order("start_at");
+        return data ?? [];
+      }
+
+      if (name === "get_client_info") {
+        const { data } = await supabaseAdmin
+          .from("clients")
+          .select("first_name, last_name, email, notes")
+          .eq("id", client_id)
+          .maybeSingle();
+        return data ?? {};
+      }
+
+      if (name === "get_job_info") {
+        const { data } = await supabaseAdmin
+          .from("jobs")
+          .select("title, event_date, notes")
+          .eq("id", job_id)
+          .maybeSingle();
+        return data ?? {};
+      }
+
+      return { error: "unknown tool" };
+    }
+
+    // ── Agentic Loop ─────────────────────────────────────────────────────────
+    const today = new Date().toISOString().split("T")[0];
+    const messages = [
+      {
+        role: "user",
+        content: `Heute ist der ${today}.
+
+Aufgabe: ${task || "Schreibe eine freundliche, professionelle E-Mail-Antwort auf Deutsch."}
+
+${mail_history ? `Bisheriger Mailverkehr:\n${mail_history}` : ""}
+
+Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln, dann schreibe die E-Mail. Gib am Ende NUR den fertigen E-Mail-Text zurück, ohne Erklärungen.`,
+      },
+    ];
+
+    let finalText = "";
+    let iterations = 0;
+
+    while (iterations < 10) {
+      iterations++;
+
+      let aiResp;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        aiResp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": process.env.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 1024,
+            tools,
+            messages,
+            system: "Du bist ein Assistent für einen Fotografen. Du schreibst professionelle, freundliche E-Mails auf Deutsch. Sammle zuerst alle nötigen Informationen über die Tools, dann schreibe die E-Mail.",
+          }),
+        });
+        if (aiResp.status !== 529) break;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+
+      const aiData = await aiResp.json();
+      const stopReason = aiData.stop_reason;
+      const content = aiData.content ?? [];
+
+      // Antwort zur Message-History hinzufügen
+      messages.push({ role: "assistant", content });
+
+      if (stopReason === "end_turn") {
+        // Fertiger Text
+        finalText = content
+          .filter(b => b.type === "text")
+          .map(b => b.text)
+          .join("\n")
+          .trim();
+        break;
+      }
+
+      if (stopReason === "tool_use") {
+        // Tools ausführen
+        const toolResults = [];
+        for (const block of content) {
+          if (block.type !== "tool_use") continue;
+          console.log(`ai-compose: calling tool ${block.name}`, block.input);
+          const result = await executeTool(block.name, block.input);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify(result),
+          });
+        }
+        messages.push({ role: "user", content: toolResults });
+        continue;
+      }
+
+      // Unerwarteter stop_reason
+      break;
+    }
+
+    return res.json({ ok: true, text: finalText });
+  } catch (e) {
+    console.error("ai-compose error:", e);
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Mail Service läuft auf Port ${PORT}`);
 });
