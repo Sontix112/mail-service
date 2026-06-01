@@ -1492,6 +1492,82 @@ app.post("/ai-compose", async (req, res) => {
       },
     ];
 
+    // ── Freie Slots serverseitig berechnen ──────────────────────────────────
+    async function computeFreeSlots(maxSlots = 3, weeksAhead = 6) {
+      // Bürozeiten laden
+      const { data: settings } = await supabaseAdmin
+        .from("user_settings")
+        .select("office_hours")
+        .eq("user_id", user_id)
+        .maybeSingle();
+      const officeHours = settings?.office_hours ?? [];
+      if (officeHours.length === 0) return [];
+
+      // Kalender-Events laden
+      const fromDate = new Date(now);
+      fromDate.setDate(fromDate.getDate() + 1);
+      const toDate = new Date(now);
+      toDate.setDate(toDate.getDate() + weeksAhead * 7);
+      const fromStr = fromDate.toISOString().split("T")[0];
+      const toStr = toDate.toISOString().split("T")[0];
+
+      const { data: timedEvents } = await supabaseAdmin
+        .from("calendar_events")
+        .select("start_at, end_at, all_day, all_day_start_date, all_day_end_date")
+        .eq("user_id", user_id)
+        .not("status", "in", '("declined","cancelled")')
+        .gte("start_at", fromStr)
+        .lte("start_at", toStr + "T23:59:59Z");
+
+      const { data: allDayEvents } = await supabaseAdmin
+        .from("calendar_events")
+        .select("start_at, end_at, all_day, all_day_start_date, all_day_end_date")
+        .eq("user_id", user_id)
+        .eq("all_day", true)
+        .not("status", "in", '("declined","cancelled")')
+        .gte("all_day_start_date", fromStr)
+        .lte("all_day_start_date", toStr);
+
+      // Belegte Daten als Set (YYYY-MM-DD)
+      const busyDates = new Set();
+      for (const e of (timedEvents ?? [])) {
+        if (e.start_at) busyDates.add(e.start_at.split("T")[0]);
+      }
+      for (const e of (allDayEvents ?? [])) {
+        if (e.all_day_start_date) busyDates.add(e.all_day_start_date);
+      }
+
+      // JS weekday: 0=Sonntag, 1=Montag ... 6=Samstag
+      // Unsere Kodierung: 1=Montag ... 7=Sonntag
+      const toJsWeekday = (d) => d === 7 ? 0 : d;
+
+      const slots = [];
+      const cursor = new Date(fromDate);
+      while (slots.length < maxSlots && cursor <= toDate) {
+        const jsDay = cursor.getDay();
+        const dateStr = cursor.toISOString().split("T")[0];
+
+        for (const rule of officeHours) {
+          const ruleJsDays = (rule.weekdays ?? []).map(d =>
+            typeof d === "number" ? toJsWeekday(d) : ["Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"].indexOf(d)
+          );
+          if (ruleJsDays.includes(jsDay) && !busyDates.has(dateStr)) {
+            // Uhrzeit: Mitte des Bürozeitfensters
+            const fromH = parseInt((rule.from ?? "08:00").split(":")[0]);
+            const toH = parseInt((rule.to ?? "10:00").split(":")[0]);
+            const midH = Math.floor((fromH + toH) / 2);
+            const timeStr = `${String(midH).padStart(2,"0")}:00`;
+            // Datum formatieren: DD.MM.YYYY
+            const [y, m, d2] = dateStr.split("-");
+            slots.push(`${d2}.${m}.${y} ${timeStr}`);
+            break;
+          }
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      return slots;
+    }
+
     // ── Tool-Implementierungen ───────────────────────────────────────────────
     async function executeTool(name, input) {
       if (name === "get_office_hours") {
@@ -1554,8 +1630,17 @@ app.post("/ai-compose", async (req, res) => {
       return { error: "unknown tool" };
     }
 
-    // ── Agentic Loop ─────────────────────────────────────────────────────────
+    // ── Terminvorschläge: direkt serverseitig berechnen ─────────────────────
     const now = new Date();
+    if (task && task.includes("Termine")) {
+      const slots = await computeFreeSlots(3, 6);
+      if (slots.length === 0) {
+        return res.json({ ok: true, text: "Keine freien Termine gefunden." });
+      }
+      return res.json({ ok: true, text: slots.join("\n") });
+    }
+
+    // ── Agentic Loop ─────────────────────────────────────────────────────────
     const today = now.toISOString().split("T")[0];
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const messages = [
