@@ -1500,7 +1500,12 @@ app.post("/ai-compose", async (req, res) => {
           .select("office_hours")
           .eq("user_id", user_id)
           .maybeSingle();
-        return data?.office_hours ?? [];
+        const dayNames = ["", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+        const hours = data?.office_hours ?? [];
+        return hours.map(entry => ({
+          ...entry,
+          weekdays: entry.weekdays.map(d => dayNames[d] ?? d),
+        }));
       }
 
       if (name === "get_calendar_events") {
