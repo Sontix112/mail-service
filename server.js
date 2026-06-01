@@ -1583,6 +1583,7 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
       }
 
       const aiData = await aiResp.json();
+      // Wenn stop_reason end_turn → Text extrahieren
       const stopReason = aiData.stop_reason;
       const content = aiData.content ?? [];
 
@@ -1590,12 +1591,22 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
       messages.push({ role: "assistant", content });
 
       if (stopReason === "end_turn") {
-        // Fertiger Text
-        finalText = content
+        const rawText = content
           .filter(b => b.type === "text")
           .map(b => b.text)
           .join("\n")
           .trim();
+        // Bei Terminvorschlägen: nur Datum-Zeilen extrahieren (DD.MM.YYYY HH:MM)
+        if (task && task.includes("Termine")) {
+          const dateLines = rawText
+            .split("\n")
+            .map(l => l.trim())
+            .filter(l => /^\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}/.test(l))
+            .slice(0, 3);
+          finalText = dateLines.join("\n");
+        } else {
+          finalText = rawText;
+        }
         break;
       }
 
