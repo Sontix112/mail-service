@@ -1537,17 +1537,21 @@ app.post("/ai-compose", async (req, res) => {
     }
 
     // ── Agentic Loop ─────────────────────────────────────────────────────────
-    const today = new Date().toISOString().split("T")[0];
+    const now = new Date();
+    const today = now.toISOString().split("T")[0];
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const messages = [
       {
         role: "user",
-        content: `Heute ist der ${today}.
+        content: `Heute ist der ${today}, aktuelle Uhrzeit: ${now.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" })} Uhr (Europe/Berlin).
+
+WICHTIG: Schlage NUR Termine vor die in der Zukunft liegen. Der früheste mögliche Tag ist morgen (${tomorrow}). Heute (${today}) darf NICHT vorgeschlagen werden, auch wenn noch Bürozeit übrig ist.
 
 Aufgabe: ${task || "Schreibe eine freundliche, professionelle E-Mail-Antwort auf Deutsch."}
 
 ${mail_history ? `Bisheriger Mailverkehr:\n${mail_history}` : ""}
 
-Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln, dann schreibe die E-Mail. Gib am Ende NUR den fertigen E-Mail-Text zurück, ohne Erklärungen.`,
+Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am Ende NUR das Ergebnis zurück, ohne Erklärungen, ohne Einleitung, ohne Markdown-Formatierung.`,
       },
     ];
 
