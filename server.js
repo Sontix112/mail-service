@@ -1504,7 +1504,8 @@ app.post("/ai-compose", async (req, res) => {
       }
 
       if (name === "get_calendar_events") {
-        const { data } = await supabaseAdmin
+        // Normale Termine (mit start_at)
+        const { data: timed } = await supabaseAdmin
           .from("calendar_events")
           .select("title, start_at, end_at, all_day, all_day_start_date, all_day_end_date, status")
           .eq("user_id", user_id)
@@ -1512,7 +1513,19 @@ app.post("/ai-compose", async (req, res) => {
           .gte("start_at", input.from)
           .lte("start_at", input.to + "T23:59:59Z")
           .order("start_at");
-        return data ?? [];
+
+        // Ganztägige Termine (all_day_start_date)
+        const { data: allDay } = await supabaseAdmin
+          .from("calendar_events")
+          .select("title, start_at, end_at, all_day, all_day_start_date, all_day_end_date, status")
+          .eq("user_id", user_id)
+          .eq("all_day", true)
+          .not("status", "in", '("declined","cancelled")')
+          .gte("all_day_start_date", input.from)
+          .lte("all_day_start_date", input.to)
+          .order("all_day_start_date");
+
+        return [...(timed ?? []), ...(allDay ?? [])];
       }
 
       if (name === "get_client_info") {
