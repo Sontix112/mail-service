@@ -774,6 +774,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                   // KI-Analyse: Welche Tools braucht der Nutzer für diese Antwort?
                   let detectedTools = [];
+                  let openTopics = "";
                   try {
                     const cleanReplyText = (mail.body_text ?? "")
                       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
@@ -802,8 +803,15 @@ Verfügbare Tools:
 - appointment_suggestion: Kunde fragt nach Terminen, Verfügbarkeit oder möchte ein Kennenlernen/Meeting vereinbaren
 - offer: Kunde ist interessiert und möchte ein konkretes Angebot oder hat grundsätzlich zugesagt
 
-Antworte NUR mit einem JSON-Array der relevanten Tool-Keys. Wenn kein Tool passt, antworte mit einem leeren Array.
-Beispiele: ["price_list"] oder ["appointment_suggestion","offer"] oder []
+Prüfe außerdem, ob die Kundenmail Fragen oder Themen enthält, die NICHT durch eines der obigen Tools abgedeckt werden (z.B. organisatorische Fragen, individuelle Anliegen, Sonderwünsche). Falls ja, fasse diese offenen Punkte kurz und stichpunktartig zusammen (für den Fotografen, der diese Punkte dann selbst beantwortet). Falls alle Themen durch die obigen Tools abgedeckt sind, lasse open_topics leer.
+
+Antworte NUR mit einem JSON-Objekt in diesem Format, ohne Einleitung oder Erklärung:
+{"tools": ["price_list"], "open_topics": ""}
+
+Beispiele:
+{"tools": ["price_list"], "open_topics": ""}
+{"tools": ["appointment_suggestion","offer"], "open_topics": "- Kunde fragt, ob Parkplätze vor Ort vorhanden sind\\n- Kunde möchte wissen, ob Haustiere mit aufs Bild dürfen"}
+{"tools": [], "open_topics": "- Kunde bittet um Bestätigung des Empfangs der Unterlagen"}
 
 Betreff: ${mail.subject}
 Nachricht:
@@ -821,12 +829,16 @@ ${cleanReplyText}`,
                     const rawToolText = (toolAiData.content?.[0]?.text ?? "").trim();
                     console.log("Tool detection raw response:", rawToolText);
 
-                    const arrayMatch = rawToolText.match(/\[[\s\S]*\]/);
-                    if (arrayMatch) {
-                      const parsed = JSON.parse(arrayMatch[0]);
-                      if (Array.isArray(parsed)) {
+                    const objectMatch = rawToolText.match(/\{[\s\S]*\}/);
+                    if (objectMatch) {
+                      const parsed = JSON.parse(objectMatch[0]);
+                      if (Array.isArray(parsed.tools)) {
                         const validTools = ["price_list", "appointment_suggestion", "offer"];
-                        detectedTools = parsed.filter(t => validTools.includes(t));
+                        detectedTools = parsed.tools.filter(t => validTools.includes(t));
+                      }
+                      if (typeof parsed.open_topics === "string" && parsed.open_topics.trim()) {
+                        openTopics = parsed.open_topics.trim();
+                        detectedTools.push("sonstiges");
                       }
                     }
                   } catch (e) {
@@ -852,6 +864,7 @@ ${cleanReplyText}`,
                       payload: {
                         mail_message_id: mail.id,
                         detected_tools: detectedTools,
+                        open_topics: openTopics,
                       },
                     });
 
