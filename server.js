@@ -1446,8 +1446,29 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 // Body: { user_id, job_id, client_id, task, mail_history }
 app.post("/ai-compose", async (req, res) => {
   try {
-    const { user_id, job_id, client_id, task, mail_history } = req.body;
+    const { user_id, job_id, client_id, task } = req.body;
+    let { mail_history } = req.body;
     if (!user_id) return res.status(400).json({ error: "user_id required" });
+
+    // ── Mailverlauf serverseitig laden (falls vom Client nicht mitgegeben) ──
+    if ((!mail_history || !mail_history.trim()) && client_id) {
+      const { data: msgs } = await supabaseAdmin
+        .from("mail_messages")
+        .select("direction, from_email, to_email, subject, body_clean, body_text, created_at")
+        .eq("client_id", client_id)
+        .order("created_at", { ascending: true })
+        .limit(20);
+
+      if (msgs && msgs.length > 0) {
+        mail_history = msgs
+          .map((m) => {
+            const sender = m.direction === "incoming" ? "Kunde" : "Ich";
+            const body = (m.body_clean || m.body_text || "").trim();
+            return `${sender} (${m.subject || "ohne Betreff"}):\n${body}`;
+          })
+          .join("\n\n---\n\n");
+      }
+    }
 
     // ── Tool-Definitionen ────────────────────────────────────────────────────
     const tools = [
