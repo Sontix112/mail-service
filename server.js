@@ -336,6 +336,42 @@ app.post("/list-mails", async (req, res) => {
     });
   }
 });
+// ── Shared Tool-Detection Helper ─────────────────────────────────────────────
+async function runToolDetection(mail) {
+  let detectedTools = [];
+  let openTopics = "";
+  let detectedDate = null;
+  try {
+    const cleanText = (mail.body_text ?? "")
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n");
+    let aiResponse;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      aiResponse = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 300, messages: [{ role: "user", content: `Du bist ein Assistent fuer einen Fotografen. Analysiere diese Kunden-Mail und entscheide, welche Tools benoetigt werden.\n\nVerfuegbare Tools:\n- price_list: Preisfragen\n- appointment_suggestion: Terminwunsch ohne konkretes Datum\n- offer: Angebotswunsch\n- availability: Kunde nennt konkretes Datum und fragt ob verfuegbar\n\nFalls availability: extrahiere Datum als YYYY-MM-DD in detected_date, sonst leer.\nFalls offene Themen ausserhalb der Tools: stichpunktartig in open_topics, sonst leer.\n\nAntworte NUR mit JSON:\n{"tools": ["availability"], "open_topics": "", "detected_date": "2026-08-15"}\n\nBetreff: ${mail.subject}\nNachricht:\n${cleanText}` }] }),
+      });
+      if (aiResponse.status !== 529) break;
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    const aiData = await aiResponse.json();
+    const rawText = (aiData.content?.[0]?.text ?? "").trim();
+    console.log("Tool detection raw response:", rawText);
+    const objectMatch = rawText.match(/\{[\s\S]*\}/);
+    if (objectMatch) {
+      const parsed = JSON.parse(objectMatch[0]);
+      const validTools = ["price_list", "appointment_suggestion", "offer", "availability"];
+      if (Array.isArray(parsed.tools)) detectedTools = parsed.tools.filter(t => validTools.includes(t));
+      if (typeof parsed.open_topics === "string" && parsed.open_topics.trim()) { openTopics = parsed.open_topics.trim(); detectedTools.push("sonstiges"); }
+      if (typeof parsed.detected_date === "string" && parsed.detected_date.trim()) detectedDate = parsed.detected_date.trim();
+    }
+  } catch (e) { console.error("Tool detection error:", e.message); }
+  return { detectedTools, openTopics, detectedDate };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 app.post("/sync-all-inboxes", async (req, res) => {
   const secret = req.headers["x-cron-secret"];
   if (!secret || secret !== process.env.CRON_SECRET) {
@@ -772,79 +808,11 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                   const nextAction = connection.routine_actions;
 
-                  // KI-Analyse: Welche Tools braucht der Nutzer für diese Antwort?
-                  let detectedTools = [];
-                  let openTopics = "";
-                  try {
-                    const cleanReplyText = (mail.body_text ?? "")
-                      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
-                      .replace(/\r\n/g, "\n")
-                      .replace(/\r/g, "\n");
-
-                    let toolAiResponse;
-                    for (let attempt = 0; attempt < 3; attempt++) {
-                      toolAiResponse = await fetch("https://api.anthropic.com/v1/messages", {
-                        method: "POST",
-                        headers: {
-                          "Content-Type": "application/json",
-                          "x-api-key": process.env.ANTHROPIC_API_KEY,
-                          "anthropic-version": "2023-06-01",
-                        },
-                        body: JSON.stringify({
-                          model: "claude-haiku-4-5-20251001",
-                          max_tokens: 256,
-                          messages: [
-                            {
-                              role: "user",
-                              content: `Du bist ein Assistent für einen Fotografen. Analysiere diese Kunden-Antwort-Mail und entscheide, welche der folgenden Tools der Fotograf für seine Antwort benötigt.
-
-Verfügbare Tools:
-- price_list: Kunde fragt nach Preisen, Paketen, Kosten oder einer Preisliste
-- appointment_suggestion: Kunde fragt nach Terminen, Verfügbarkeit oder möchte ein Kennenlernen/Meeting vereinbaren
-- offer: Kunde ist interessiert und möchte ein konkretes Angebot oder hat grundsätzlich zugesagt
-
-Prüfe außerdem, ob die Kundenmail Fragen oder Themen enthält, die NICHT durch eines der obigen Tools abgedeckt werden (z.B. organisatorische Fragen, individuelle Anliegen, Sonderwünsche). Falls ja, fasse diese offenen Punkte kurz und stichpunktartig zusammen (für den Fotografen, der diese Punkte dann selbst beantwortet). Falls alle Themen durch die obigen Tools abgedeckt sind, lasse open_topics leer.
-
-Antworte NUR mit einem JSON-Objekt in diesem Format, ohne Einleitung oder Erklärung:
-{"tools": ["price_list"], "open_topics": ""}
-
-Beispiele:
-{"tools": ["price_list"], "open_topics": ""}
-{"tools": ["appointment_suggestion","offer"], "open_topics": "- Kunde fragt, ob Parkplätze vor Ort vorhanden sind\\n- Kunde möchte wissen, ob Haustiere mit aufs Bild dürfen"}
-{"tools": [], "open_topics": "- Kunde bittet um Bestätigung des Empfangs der Unterlagen"}
-
-Betreff: ${mail.subject}
-Nachricht:
-${cleanReplyText}`,
-                            },
-                          ],
-                        }),
-                      });
-                      if (toolAiResponse.status !== 529) break;
-                      console.log(`Tool detection: Anthropic overloaded, retry ${attempt + 1}...`);
-                      await new Promise(r => setTimeout(r, 2000));
-                    }
-
-                    const toolAiData = await toolAiResponse.json();
-                    const rawToolText = (toolAiData.content?.[0]?.text ?? "").trim();
-                    console.log("Tool detection raw response:", rawToolText);
-
-                    const objectMatch = rawToolText.match(/\{[\s\S]*\}/);
-                    if (objectMatch) {
-                      const parsed = JSON.parse(objectMatch[0]);
-                      if (Array.isArray(parsed.tools)) {
-                        const validTools = ["price_list", "appointment_suggestion", "offer"];
-                        detectedTools = parsed.tools.filter(t => validTools.includes(t));
-                      }
-                      if (typeof parsed.open_topics === "string" && parsed.open_topics.trim()) {
-                        openTopics = parsed.open_topics.trim();
-                        detectedTools.push("sonstiges");
-                      }
-                    }
-                  } catch (e) {
-                    console.error("Tool detection error:", e.message);
-                    // detectedTools bleibt [], Action wird trotzdem erstellt
-                  }
+                  // KI-Analyse via shared helper
+                  const toolResult = await runToolDetection(mail);
+                  const detectedTools = toolResult.detectedTools;
+                  const openTopics = toolResult.openTopics;
+                  const detectedDate = toolResult.detectedDate;
 
                   await supabaseAdmin
                     .from("job_actions")
@@ -865,11 +833,92 @@ ${cleanReplyText}`,
                         mail_message_id: mail.id,
                         detected_tools: detectedTools,
                         open_topics: openTopics,
+                        detected_date: detectedDate,
                       },
                     });
 
                   console.log(`wait_for_reply ${action.id} completed, answer_reply created for ${clientName}, detected_tools: ${JSON.stringify(detectedTools)}`);
                 }
+              }
+
+              // Vierter Loop — Bekannte Kunden ohne wait_for_reply
+              for (const mail of insertedMails) {
+                if (!mail.from_email) continue;
+
+                const { data: matchedClients } = await supabaseAdmin
+                  .from('clients')
+                  .select('id, email, first_name, name')
+                  .eq('user_id', mail.user_id)
+                  .ilike('email', mail.from_email);
+
+                if (!matchedClients?.length) continue;
+
+                const matchedClient = matchedClients[0];
+                const clientName4 = matchedClient.first_name
+                  ? `${matchedClient.first_name}${matchedClient.name ? ' ' + matchedClient.name : ''}`
+                  : matchedClient.email;
+
+                const { data: openJobs } = await supabaseAdmin
+                  .from('jobs')
+                  .select('id')
+                  .eq('user_id', mail.user_id)
+                  .eq('client_id', matchedClient.id)
+                  .in('status', ['active', 'open', 'in_progress'])
+                  .order('created_at', { ascending: false })
+                  .limit(1);
+
+                const jobId4 = openJobs?.[0]?.id ?? null;
+
+                // Bereits offene answer_reply für diesen Kunden?
+                const { data: existingActions } = await supabaseAdmin
+                  .from('job_actions')
+                  .select('id')
+                  .eq('user_id', mail.user_id)
+                  .eq('client_id', matchedClient.id)
+                  .eq('page_key', 'answer_reply')
+                  .neq('status', 'done');
+
+                if (existingActions?.length) {
+                  console.log(`Known client ${clientName4}: open answer_reply already exists, skipping`);
+                  continue;
+                }
+
+                // Bereits durch wait_for_reply verarbeitet?
+                const { data: existingByMail } = await supabaseAdmin
+                  .from('job_actions')
+                  .select('id')
+                  .eq('user_id', mail.user_id)
+                  .contains('payload', { mail_message_id: mail.id });
+
+                if (existingByMail?.length) {
+                  console.log(`Known client ${clientName4}: mail already processed, skipping`);
+                  continue;
+                }
+
+                const toolResult = await runToolDetection(mail);
+
+                await supabaseAdmin
+                  .from('job_actions')
+                  .insert({
+                    user_id: mail.user_id,
+                    job_id: jobId4,
+                    client_id: matchedClient.id,
+                    title: `Mail von ${clientName4} beantworten`,
+                    description: '',
+                    page_key: 'answer_reply',
+                    action_type: 'standard',
+                    status: 'active',
+                    sort_order: 2,
+                    activated_at: new Date().toISOString(),
+                    payload: {
+                      mail_message_id: mail.id,
+                      detected_tools: toolResult.detectedTools,
+                      open_topics: toolResult.openTopics,
+                      detected_date: toolResult.detectedDate,
+                    },
+                  });
+
+                console.log(`Known client ${clientName4}: answer_reply created, tools: ${JSON.stringify(toolResult.detectedTools)}, date: ${toolResult.detectedDate}`);
               }
             }
           }
