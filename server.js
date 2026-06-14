@@ -1847,6 +1847,106 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
   }
 });
 
+app.post("/link-mail-to-job", async (req, res) => {
+  try {
+    const { jwt, system_action_id, client_id, job_id } = req.body || {};
+
+    if (!jwt || !system_action_id || !client_id) {
+      return res.status(400).json({ error: "Missing required fields: jwt, system_action_id, client_id" });
+    }
+
+    const supabaseUser = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY,
+      { global: { headers: { Authorization: `Bearer ${jwt}` } } }
+    );
+
+    const { data: userData, error: userErr } = await supabaseUser.auth.getUser();
+    if (userErr || !userData?.user) {
+      return res.status(401).json({ error: "Invalid user" });
+    }
+
+    // System action laden um bestehenden payload zu erhalten
+    const { data: existingAction, error: fetchErr } = await supabaseAdmin
+      .from("system_actions")
+      .select("payload, mail_message_id")
+      .eq("id", system_action_id)
+      .eq("user_id", userData.user.id)
+      .single();
+
+    if (fetchErr || !existingAction) {
+      return res.status(404).json({ error: "system_action not found" });
+    }
+
+    // Tool detection auf der Mail ausführen
+    let detectedTools = [];
+    let openTopics = [];
+    let detectedDate = null;
+
+    if (existingAction.mail_message_id) {
+      const { data: mail } = await supabaseAdmin
+        .from("mail_messages")
+        .select("body_text, body_clean, subject, from_email, sent_at, received_at")
+        .eq("id", existingAction.mail_message_id)
+        .single();
+
+      if (mail) {
+        try {
+          const toolResult = await runToolDetection(mail);
+          detectedTools = toolResult.detectedTools;
+          openTopics = toolResult.openTopics;
+          detectedDate = toolResult.detectedDate;
+        } catch (e) {
+          console.error("Tool detection error:", e.message);
+        }
+      }
+    }
+
+    // System action updaten mit client_id, job_id und payload
+    const updatedPayload = {
+      ...(existingAction.payload ?? {}),
+      client_id,
+      job_id: job_id ?? null,
+      mail_message_id: existingAction.mail_message_id,
+      detected_tools: detectedTools,
+      open_topics: openTopics,
+      detected_date: detectedDate,
+    };
+
+    const { error: updateErr } = await supabaseAdmin
+      .from("system_actions")
+      .update({
+        page_key: "answer_reply",
+        status: "active",
+        payload: updatedPayload,
+      })
+      .eq("id", system_action_id)
+      .eq("user_id", userData.user.id);
+
+    if (updateErr) {
+      return res.status(500).json({ error: updateErr.message });
+    }
+
+    // Mail message mit client_id und job_id verknüpfen
+    if (existingAction.mail_message_id) {
+      await supabaseAdmin
+        .from("mail_messages")
+        .update({
+          client_id,
+          job_id: job_id ?? null,
+        })
+        .eq("id", existingAction.mail_message_id);
+    }
+
+    console.log(`link-mail-to-job: system_action ${system_action_id} → client ${client_id}, job ${job_id ?? "none"}, tools: ${JSON.stringify(detectedTools)}`);
+    return res.json({ ok: true, detected_tools: detectedTools });
+
+  } catch (e) {
+    console.error("link-mail-to-job error:", e);
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Mail Service läuft auf Port ${PORT}`);
 });
