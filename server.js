@@ -842,7 +842,9 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
               }
 
               // Vierter Loop — Bekannte Kunden ohne wait_for_reply
+              console.log(`Vierter Loop: checking ${insertedMails.length} mails for known clients`);
               for (const mail of insertedMails) {
+                console.log(`Vierter Loop: checking mail from ${mail.from_email}`);
                 if (!mail.from_email) continue;
 
                 const { data: matchedClients } = await supabaseAdmin
@@ -888,7 +890,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   .from('job_actions')
                   .select('id')
                   .eq('user_id', mail.user_id)
-                  .contains('payload', { mail_message_id: mail.id });
+                  .filter('payload->>mail_message_id', 'eq', mail.id);
 
                 if (existingByMail?.length) {
                   console.log(`Known client ${clientName4}: mail already processed, skipping`);
