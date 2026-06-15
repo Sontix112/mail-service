@@ -748,6 +748,21 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   : `Mail: ${mail.subject ?? mail.from_email}`;
                 const status = confidence === 0 ? "pending" : (confidence >= 40 ? "active" : "dismissed");
 
+                // Tool Detection für diese Mail
+                try {
+                  const mailForDetection = {
+                    ...mail,
+                    body_text: (mail.body_clean && mail.body_clean.trim()) ? mail.body_clean : mail.body_text,
+                  };
+                  const toolResult = await runToolDetection(mailForDetection);
+                  aiPayload.detected_tools = toolResult.detectedTools;
+                  aiPayload.open_topics = toolResult.openTopics;
+                  aiPayload.detected_date = toolResult.detectedDate;
+                  console.log(`Dritter Loop: tool detection für ${mail.from_email}: ${JSON.stringify(toolResult.detectedTools)}`);
+                } catch (e) {
+                  console.error(`Dritter Loop: tool detection error:`, e.message);
+                }
+
                 await supabaseAdmin
                   .from("system_actions")
                   .insert({
