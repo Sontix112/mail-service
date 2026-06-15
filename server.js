@@ -1945,9 +1945,9 @@ app.post("/link-mail-to-job", async (req, res) => {
 
 app.post('/activate-mail-action', async (req, res) => {
   try {
-    const { jwt, job_action_id } = req.body || {};
-    if (!jwt || !job_action_id) {
-      return res.status(400).json({ error: 'Missing required fields: jwt, job_action_id' });
+    const { jwt, job_action_id, system_action_id } = req.body || {};
+    if (!jwt || (!job_action_id && !system_action_id)) {
+      return res.status(400).json({ error: 'Missing required fields: jwt + job_action_id or system_action_id' });
     }
 
     const supabaseUser = createClient(
@@ -1961,13 +1961,36 @@ app.post('/activate-mail-action', async (req, res) => {
       return res.status(401).json({ error: 'Invalid user' });
     }
 
-    // job_action laden
-    const { data: action } = await supabaseAdmin
-      .from('job_actions')
-      .select('id, payload')
-      .eq('id', job_action_id)
-      .eq('user_id', userData.user.id)
-      .single();
+    let action;
+    if (job_action_id) {
+      // Direkt per job_action_id
+      const { data } = await supabaseAdmin
+        .from('job_actions')
+        .select('id, payload')
+        .eq('id', job_action_id)
+        .eq('user_id', userData.user.id)
+        .single();
+      action = data;
+    } else {
+      // Via system_action_id die zugehörige job_action finden
+      const { data: sysAction } = await supabaseAdmin
+        .from('system_actions')
+        .select('mail_message_id')
+        .eq('id', system_action_id)
+        .eq('user_id', userData.user.id)
+        .single();
+      if (sysAction?.mail_message_id) {
+        const { data } = await supabaseAdmin
+          .from('job_actions')
+          .select('id, payload')
+          .eq('user_id', userData.user.id)
+          .filter('payload->>mail_message_id', 'eq', sysAction.mail_message_id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
+        action = data;
+      }
+    }
 
     if (!action) return res.status(404).json({ error: 'job_action not found' });
 
