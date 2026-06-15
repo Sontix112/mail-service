@@ -566,33 +566,42 @@ ${parsed.html}
 
               // Zweiter Loop — body_clean per KI extrahieren
               for (const mail of insertedMails) {
-                const rawText = mail.body_text ?? "";
+                const rawText = mail.body_text ?? '';
                 if (!rawText.trim()) continue;
 
                 const cleanInput = rawText
-                  .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
-                  .replace(/\r\n/g, "\n")
-                  .replace(/\r/g, "\n");
+                  .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+                  .replace(/\r\n/g, '\n')
+                  .replace(/\r/g, '\n');
+
+                const isHtmlMail = !!(mail.body_html && mail.body_html.trim());
+
+                const prompt = isHtmlMail
+                  ? `Diese E-Mail wurde aus HTML in Text konvertiert. Fasse die wichtigsten Informationen übersichtlich auf Deutsch zusammen. Verwende kurze Absätze oder Stichpunkte wo sinnvoll. Entferne technische Artefakte und unwichtige Details. Gib nur die aufbereitete Version zurück, ohne Erklärung, ohne Anführungszeichen, ohne Markdown.
+
+E-Mail:
+${cleanInput.slice(0, 3000)}`
+                  : `Extrahiere aus dieser E-Mail nur den eigentlichen neuen Text der aktuellen Nachricht. Entferne vollständig: zitierte Vorgänger-Mails (Zeilen die mit > beginnen), automatische Signaturen, "Von:", "Gesendet:", "An:", "Betreff:" Header-Blöcke von zitierten Mails, und typische Trennlinien wie "---" oder "___" die Zitate einleiten. Gib nur den bereinigten Text zurück, ohne Erklärung, ohne Anführungszeichen, ohne Markdown.
+
+E-Mail:
+${cleanInput.slice(0, 3000)}`;
 
                 try {
                   let cleanResponse;
                   for (let attempt = 0; attempt < 3; attempt++) {
-                    cleanResponse = await fetch("https://api.anthropic.com/v1/messages", {
-                      method: "POST",
+                    cleanResponse = await fetch('https://api.anthropic.com/v1/messages', {
+                      method: 'POST',
                       headers: {
-                        "Content-Type": "application/json",
-                        "x-api-key": process.env.ANTHROPIC_API_KEY,
-                        "anthropic-version": "2023-06-01",
+                        'Content-Type': 'application/json',
+                        'x-api-key': process.env.ANTHROPIC_API_KEY,
+                        'anthropic-version': '2023-06-01',
                       },
                       body: JSON.stringify({
-                        model: "claude-haiku-4-5-20251001",
+                        model: 'claude-haiku-4-5-20251001',
                         max_tokens: 1024,
                         messages: [{
-                          role: "user",
-                          content: `Extrahiere aus dieser E-Mail nur den eigentlichen neuen Text der aktuellen Nachricht. Entferne vollständig: zitierte Vorgänger-Mails (Zeilen die mit > beginnen), automatische Signaturen, "Von:", "Gesendet:", "An:", "Betreff:" Header-Blöcke von zitierten Mails, und typische Trennlinien wie "---" oder "___" die Zitate einleiten. Gib nur den bereinigten Text zurück, ohne Erklärung, ohne Anführungszeichen, ohne Markdown.
-
-E-Mail:
-${cleanInput.slice(0, 3000)}`
+                          role: 'user',
+                          content: prompt
                         }],
                       }),
                     });
@@ -605,10 +614,10 @@ ${cleanInput.slice(0, 3000)}`
 
                   if (bodyClean) {
                     await supabaseAdmin
-                      .from("mail_messages")
+                      .from('mail_messages')
                       .update({ body_clean: bodyClean })
-                      .eq("id", mail.id);
-                    console.log(`body_clean set for mail ${mail.id}`);
+                      .eq('id', mail.id);
+                    console.log(`body_clean set for mail ${mail.id} (${isHtmlMail ? 'html-mail' : 'text-mail'})`);
                   }
                 } catch (e) {
                   console.error(`body_clean error for mail ${mail.id}:`, e.message);
