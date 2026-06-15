@@ -1945,3 +1945,60 @@ app.post("/link-mail-to-job", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Mail Service läuft auf Port ${PORT}`);
 });
+// Temporärer Endpoint: body_clean für eine Mail neu generieren
+app.post("/retry-body-clean", async (req, res) => {
+  try {
+    const { mail_message_id } = req.body || {};
+    if (!mail_message_id) return res.status(400).json({ error: "mail_message_id required" });
+
+    const { data: mail } = await supabaseAdmin
+      .from("mail_messages")
+      .select("id, body_text, body_html")
+      .eq("id", mail_message_id)
+      .single();
+
+    if (!mail) return res.status(404).json({ error: "mail not found" });
+
+    const rawText = mail.body_text ?? "";
+    if (!rawText.trim()) return res.json({ ok: false, reason: "no body_text" });
+
+    const cleanInput = rawText
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n");
+
+    const isHtmlMail = !!(mail.body_html && mail.body_html.trim());
+
+    const prompt = isHtmlMail
+      ? `Diese E-Mail wurde aus HTML in Text konvertiert. Fasse die wichtigsten Informationen übersichtlich auf Deutsch zusammen. Verwende kurze Absätze oder Stichpunkte wo sinnvoll. Entferne technische Artefakte und unwichtige Details. Gib nur die aufbereitete Version zurück, ohne Erklärung, ohne Anführungszeichen, ohne Markdown.\n\nE-Mail:\n${cleanInput.slice(0, 3000)}`
+      : `Extrahiere aus dieser E-Mail nur den eigentlichen neuen Text der aktuellen Nachricht. Entferne vollständig: zitierte Vorgänger-Mails, automatische Signaturen, Header-Blöcke von zitierten Mails. Gib nur den bereinigten Text zurück, ohne Erklärung, ohne Anführungszeichen, ohne Markdown.\n\nE-Mail:\n${cleanInput.slice(0, 3000)}`;
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    const data = await response.json();
+    const bodyClean = data.content?.[0]?.text?.trim() ?? null;
+
+    if (!bodyClean) return res.json({ ok: false, reason: "no output from AI" });
+
+    await supabaseAdmin
+      .from("mail_messages")
+      .update({ body_clean: bodyClean })
+      .eq("id", mail_message_id);
+
+    return res.json({ ok: true, isHtmlMail, body_clean: bodyClean });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
