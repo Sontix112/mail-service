@@ -1942,6 +1942,77 @@ app.post("/link-mail-to-job", async (req, res) => {
   }
 });
 
+
+app.post('/activate-mail-action', async (req, res) => {
+  try {
+    const { jwt, job_action_id } = req.body || {};
+    if (!jwt || !job_action_id) {
+      return res.status(400).json({ error: 'Missing required fields: jwt, job_action_id' });
+    }
+
+    const supabaseUser = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY,
+      { global: { headers: { Authorization: `Bearer ${jwt}` } } }
+    );
+
+    const { data: userData, error: userErr } = await supabaseUser.auth.getUser();
+    if (userErr || !userData?.user) {
+      return res.status(401).json({ error: 'Invalid user' });
+    }
+
+    // job_action laden
+    const { data: action } = await supabaseAdmin
+      .from('job_actions')
+      .select('id, payload')
+      .eq('id', job_action_id)
+      .eq('user_id', userData.user.id)
+      .single();
+
+    if (!action) return res.status(404).json({ error: 'job_action not found' });
+
+    const mailMessageId = action.payload?.mail_message_id;
+    if (!mailMessageId) return res.status(400).json({ error: 'No mail_message_id in payload' });
+
+    // Mail laden
+    const { data: mail } = await supabaseAdmin
+      .from('mail_messages')
+      .select('id, subject, body_text, body_clean')
+      .eq('id', mailMessageId)
+      .single();
+
+    if (!mail) return res.status(404).json({ error: 'mail not found' });
+
+    // Tool Detection — body_clean bevorzugen wenn vorhanden
+    const mailForDetection = {
+      ...mail,
+      body_text: (mail.body_clean && mail.body_clean.trim()) ? mail.body_clean : mail.body_text,
+    };
+
+    const toolResult = await runToolDetection(mailForDetection);
+
+    // payload updaten
+    const updatedPayload = {
+      ...(action.payload ?? {}),
+      detected_tools: toolResult.detectedTools,
+      open_topics: toolResult.openTopics,
+      detected_date: toolResult.detectedDate,
+    };
+
+    await supabaseAdmin
+      .from('job_actions')
+      .update({ payload: updatedPayload })
+      .eq('id', job_action_id);
+
+    console.log(`activate-mail-action: job_action ${job_action_id} → tools: ${JSON.stringify(toolResult.detectedTools)}, date: ${toolResult.detectedDate}`);
+    return res.json({ ok: true, detected_tools: toolResult.detectedTools, detected_date: toolResult.detectedDate });
+
+  } catch (e) {
+    console.error('activate-mail-action error:', e);
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Mail Service läuft auf Port ${PORT}`);
 });
