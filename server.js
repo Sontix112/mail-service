@@ -871,21 +871,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                 const jobId4 = openJobs?.[0]?.id ?? null;
 
-                // Bereits offene answer_reply für diesen Kunden?
-                const { data: existingActions } = await supabaseAdmin
-                  .from('job_actions')
-                  .select('id')
-                  .eq('user_id', mail.user_id)
-                  .eq('client_id', matchedClient.id)
-                  .eq('page_key', 'answer_reply')
-                  .neq('status', 'done');
-
-                if (existingActions?.length) {
-                  console.log(`Known client ${clientName4}: open answer_reply already exists, skipping`);
-                  continue;
-                }
-
-                // Bereits durch wait_for_reply verarbeitet?
+                // Bereits eine action für genau diese Mail?
                 const { data: existingByMail } = await supabaseAdmin
                   .from('job_actions')
                   .select('id')
@@ -893,7 +879,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   .filter('payload->>mail_message_id', 'eq', mail.id);
 
                 if (existingByMail?.length) {
-                  console.log(`Known client ${clientName4}: mail already processed, skipping`);
+                  console.log(`Known client ${clientName4}: mail ${mail.id} already has a job_action, skipping`);
                   continue;
                 }
 
