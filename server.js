@@ -537,7 +537,7 @@ ${parsed.html}
             const { data: insertedMails, error: insertErr } = await supabaseAdmin
               .from("mail_messages")
               .insert(newMails)
-              .select("id, from_email, subject, body_text, body_preview, received_at, in_reply_to_message_id, user_id");
+              .select("id, from_email, subject, body_text, body_html, body_preview, received_at, in_reply_to_message_id, user_id");
 
             if (insertErr) {
               console.error("insert error:", insertErr.message);
