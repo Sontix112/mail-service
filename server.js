@@ -364,7 +364,7 @@ async function runToolDetection(mail) {
       const parsed = JSON.parse(objectMatch[0]);
       const validTools = ['price_list', 'appointment_suggestion', 'offer', 'availability'];
       if (Array.isArray(parsed.tools)) detectedTools = parsed.tools.filter(t => validTools.includes(t));
-      if (typeof parsed.open_topics === 'string' && parsed.open_topics.trim()) { openTopics = parsed.open_topics.trim(); detectedTools.push('sonstiges'); }
+      if (parsed.open_topics) { if (Array.isArray(parsed.open_topics) && parsed.open_topics.length > 0) { openTopics = parsed.open_topics.join(', '); detectedTools.push('sonstiges'); } else if (typeof parsed.open_topics === 'string' && parsed.open_topics.trim()) { openTopics = parsed.open_topics.trim(); detectedTools.push('sonstiges'); } }
       if (Array.isArray(parsed.detected_dates)) {
         detectedDates = parsed.detected_dates.filter(d => d.date).map(d => {
         const dt = d.date.toString().trim();
