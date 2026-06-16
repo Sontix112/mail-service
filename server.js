@@ -359,7 +359,7 @@ async function runToolDetection(mail) {
     const aiData = await aiResponse.json();
     const rawText = (aiData.content?.[0]?.text ?? '').trim();
     console.log('Tool detection raw response:', rawText);
-    const objectMatch = rawText.match(/{[sS]*}/);
+    const objectMatch = rawText.match(/\{[\s\S]*\}/);
     if (objectMatch) {
       const parsed = JSON.parse(objectMatch[0]);
       const validTools = ['price_list', 'appointment_suggestion', 'offer', 'availability'];
