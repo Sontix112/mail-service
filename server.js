@@ -760,11 +760,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                 // Tool Detection für diese Mail
                 try {
-                  const mailForDetection = {
-                    ...mail,
-                    body_text: (mail.body_clean && mail.body_clean.trim()) ? mail.body_clean : mail.body_text,
-                  };
-                  const toolResult = await runToolDetection(mailForDetection);
+                  const toolResult = await runToolDetection(mail);
                   aiPayload.detected_tools = toolResult.detectedTools;
                   aiPayload.open_topics = toolResult.openTopics;
                   aiPayload.detected_dates = toolResult.detectedDates;
