@@ -956,7 +956,62 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
 
 
-    return res.json({ ok: true, synced: totalSynced });
+        // Fünfter Loop — job_actions ohne detected_tools nachträglich analysieren
+    try {
+      const { data: pendingActions } = await supabaseAdmin
+        .from('job_actions')
+        .select('id, payload')
+        .eq('page_key', 'answer_reply')
+        .not('payload->mail_message_id', 'is', null);
+
+      const reallyPending = (pendingActions ?? []).filter(a => {
+        const tools = a.payload?.detected_tools;
+        return !tools || (Array.isArray(tools) && tools.length === 0);
+      }).slice(0, 10);
+
+      if (reallyPending.length) {
+        console.log(`Fünfter Loop: ${reallyPending.length} job_actions ohne detected_tools`);
+
+        for (const action of reallyPending) {
+          const mailMessageId = action.payload?.mail_message_id;
+          if (!mailMessageId) continue;
+
+          const { data: mail } = await supabaseAdmin
+            .from('mail_messages')
+            .select('id, subject, body_text, body_clean')
+            .eq('id', mailMessageId)
+            .single();
+
+          if (!mail) continue;
+
+          const mailForDetection = {
+            ...mail,
+            body_text: (mail.body_clean && mail.body_clean.trim()) ? mail.body_clean : mail.body_text,
+          };
+
+          try {
+            const toolResult = await runToolDetection(mailForDetection);
+            if (!toolResult.detectedTools.length && !toolResult.detectedDates.length) continue;
+
+            // JSONB merge via SQL um sicherzustellen dass der Update klappt
+            await supabaseAdmin.rpc('merge_job_action_payload', {
+              p_id: action.id,
+              p_detected_tools: toolResult.detectedTools,
+              p_open_topics: toolResult.openTopics,
+              p_detected_dates: toolResult.detectedDates,
+            });
+
+            console.log(`Fünfter Loop: job_action ${action.id} → tools: ${JSON.stringify(toolResult.detectedTools)}`);
+          } catch (e) {
+            console.error(`Fünfter Loop: error for ${action.id}:`, e.message);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Fünfter Loop error:', e.message);
+    }
+
+return res.json({ ok: true, synced: totalSynced });
   } catch (e) {
     return res.status(500).json({ error: e?.message ?? String(e) });
   }
