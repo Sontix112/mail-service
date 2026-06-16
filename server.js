@@ -339,36 +339,38 @@ app.post("/list-mails", async (req, res) => {
 // ── Shared Tool-Detection Helper ─────────────────────────────────────────────
 async function runToolDetection(mail) {
   let detectedTools = [];
-  let openTopics = "";
-  let detectedDate = null;
+  let openTopics = '';
+  let detectedDates = [];
   try {
-    const cleanText = (mail.body_text ?? "")
-      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n");
+    const cleanText = (mail.body_text ?? '')
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n');
     let aiResponse;
     for (let attempt = 0; attempt < 3; attempt++) {
-      aiResponse = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 300, messages: [{ role: "user", content: `Du bist ein Assistent fuer einen Fotografen. Analysiere diese Kunden-Mail und entscheide, welche Tools benoetigt werden.\n\nVerfuegbare Tools:\n- price_list: Kunde fragt explizit nach Preisen oder Kosten\n- appointment_suggestion: Kunde moechte einen Termin vereinbaren, nennt aber kein konkretes Datum\n- offer: Kunde fragt explizit nach einem Angebot oder Kostenvoranschlag\n- availability: Kunde nennt ein konkretes Datum (z.B. Hochzeitsdatum, Veranstaltungsdatum) ODER fragt ob du an einem Datum verfuegbar bist\n\nWichtig:\n- Nur Tools auswaehlen die klar aus dem Text hervorgehen\n- offer NUR wenn explizit nach einem Angebot gefragt wird\n- availability immer wenn irgendein konkretes Datum genannt wird\n- Falls availability: extrahiere Datum als YYYY-MM-DD in detected_date, sonst leer\n- Falls offene Themen ausserhalb der Tools: stichpunktartig in open_topics, sonst leer\n\nAntworte NUR mit JSON:\n{"tools": ["availability"], "open_topics": "", "detected_date": "2026-08-15"}\n\nBetreff: ${mail.subject}\nNachricht:\n${cleanText}` }] }),
+      aiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500, messages: [{ role: 'user', content: `Du bist ein Assistent fuer einen Fotografen. Analysiere diese Kunden-Mail und entscheide, welche Tools benoetigt werden.\n\nVerfuegbare Tools:\n- price_list: Kunde fragt explizit nach Preisen oder Kosten\n- appointment_suggestion: Kunde moechte einen Termin vereinbaren, nennt aber kein konkretes Datum\n- offer: Kunde fragt explizit nach einem Angebot oder Kostenvoranschlag\n- availability: Kunde nennt ein konkretes Datum (z.B. Hochzeitsdatum, Veranstaltungsdatum) ODER fragt ob du an einem Datum verfuegbar bist\n\nVerfuegbare Label-Keys fuer Termine: hochzeit, standesamt, meeting, call, other, shooting, travel, editing, deadline, revision, buffer\n\nWichtig:\n- Nur Tools auswaehlen die klar aus dem Text hervorgehen\n- offer NUR wenn explizit nach einem Angebot gefragt wird\n- availability immer wenn irgendein konkretes Datum genannt wird\n- Falls availability: alle Daten als Array in detected_dates mit {date: YYYY-MM-DD, title: string, label: key}, sonst leeres Array\n- title ist eine kurze Beschreibung des Termins (z.B. Hochzeit, Standesamt, Shooting)\n- label ist der passende Label-Key aus der Liste oben\n- Falls offene Themen ausserhalb der Tools: stichpunktartig in open_topics, sonst leer\n\nAntworte NUR mit JSON:\n{tools: [availability], open_topics: , detected_dates: [{date: 2026-08-15, title: Hochzeit, label: hochzeit}]}\n\nBetreff: ${mail.subject}\nNachricht:\n${cleanText}` }] }),
       });
       if (aiResponse.status !== 529) break;
       await new Promise(r => setTimeout(r, 2000));
     }
     const aiData = await aiResponse.json();
-    const rawText = (aiData.content?.[0]?.text ?? "").trim();
-    console.log("Tool detection raw response:", rawText);
-    const objectMatch = rawText.match(/\{[\s\S]*\}/);
+    const rawText = (aiData.content?.[0]?.text ?? '').trim();
+    console.log('Tool detection raw response:', rawText);
+    const objectMatch = rawText.match(/{[sS]*}/);
     if (objectMatch) {
       const parsed = JSON.parse(objectMatch[0]);
-      const validTools = ["price_list", "appointment_suggestion", "offer", "availability"];
+      const validTools = ['price_list', 'appointment_suggestion', 'offer', 'availability'];
       if (Array.isArray(parsed.tools)) detectedTools = parsed.tools.filter(t => validTools.includes(t));
-      if (typeof parsed.open_topics === "string" && parsed.open_topics.trim()) { openTopics = parsed.open_topics.trim(); detectedTools.push("sonstiges"); }
-      if (typeof parsed.detected_date === "string" && parsed.detected_date.trim()) detectedDate = parsed.detected_date.trim();
+      if (typeof parsed.open_topics === 'string' && parsed.open_topics.trim()) { openTopics = parsed.open_topics.trim(); detectedTools.push('sonstiges'); }
+      if (Array.isArray(parsed.detected_dates)) {
+        detectedDates = parsed.detected_dates.filter(d => d.date && /^d{4}-d{2}-d{2}$/.test(d.date));
+      }
     }
-  } catch (e) { console.error("Tool detection error:", e.message); }
-  return { detectedTools, openTopics, detectedDate };
+  } catch (e) { console.error('Tool detection error:', e.message); }
+  return { detectedTools, openTopics, detectedDates };
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -757,7 +759,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   const toolResult = await runToolDetection(mailForDetection);
                   aiPayload.detected_tools = toolResult.detectedTools;
                   aiPayload.open_topics = toolResult.openTopics;
-                  aiPayload.detected_date = toolResult.detectedDate;
+                  aiPayload.detected_dates = toolResult.detectedDates;
                   console.log(`Dritter Loop: tool detection für ${mail.from_email}: ${JSON.stringify(toolResult.detectedTools)}`);
                 } catch (e) {
                   console.error(`Dritter Loop: tool detection error:`, e.message);
@@ -836,7 +838,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   const toolResult = await runToolDetection(mail);
                   const detectedTools = toolResult.detectedTools;
                   const openTopics = toolResult.openTopics;
-                  const detectedDate = toolResult.detectedDate;
+                  const detectedDates = toolResult.detectedDates;
 
                   await supabaseAdmin
                     .from("job_actions")
@@ -857,7 +859,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                         mail_message_id: mail.id,
                         detected_tools: detectedTools,
                         open_topics: openTopics,
-                        detected_date: detectedDate,
+                        detected_dates: detectedDates,
                       },
                     });
 
@@ -926,11 +928,11 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                       mail_message_id: mail.id,
                       detected_tools: toolResult.detectedTools,
                       open_topics: toolResult.openTopics,
-                      detected_date: toolResult.detectedDate,
+                      detected_dates: toolResult.detectedDates,
                     },
                   });
 
-                console.log(`Known client ${clientName4}: answer_reply created, tools: ${JSON.stringify(toolResult.detectedTools)}, date: ${toolResult.detectedDate}`);
+                console.log(`Known client ${clientName4}: answer_reply created, tools: ${JSON.stringify(toolResult.detectedTools)}, dates: ${JSON.stringify(toolResult.detectedDates)}`);
               }
             }
           }
@@ -984,7 +986,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   ...action.payload,
                   detected_tools: toolResult.detectedTools,
                   open_topics: toolResult.openTopics,
-                  detected_date: toolResult.detectedDate,
+                  detected_dates: toolResult.detectedDates,
                 }
               })
               .eq('id', action.id);
@@ -1946,7 +1948,7 @@ app.post("/link-mail-to-job", async (req, res) => {
     // Tool detection auf der Mail ausführen
     let detectedTools = [];
     let openTopics = [];
-    let detectedDate = null;
+    let detectedDates = [];
 
     if (existingAction.mail_message_id) {
       const { data: mail } = await supabaseAdmin
@@ -1960,7 +1962,7 @@ app.post("/link-mail-to-job", async (req, res) => {
           const toolResult = await runToolDetection(mail);
           detectedTools = toolResult.detectedTools;
           openTopics = toolResult.openTopics;
-          detectedDate = toolResult.detectedDate;
+          detectedDates = toolResult.detectedDates;
         } catch (e) {
           console.error("Tool detection error:", e.message);
         }
@@ -1975,7 +1977,7 @@ app.post("/link-mail-to-job", async (req, res) => {
       mail_message_id: existingAction.mail_message_id,
       detected_tools: detectedTools,
       open_topics: openTopics,
-      detected_date: detectedDate,
+      detected_dates: detectedDates,
     };
 
     const { error: updateErr } = await supabaseAdmin
@@ -2089,7 +2091,7 @@ app.post('/activate-mail-action', async (req, res) => {
       ...(action.payload ?? {}),
       detected_tools: toolResult.detectedTools,
       open_topics: toolResult.openTopics,
-      detected_date: toolResult.detectedDate,
+      detected_dates: toolResult.detectedDates,
     };
 
     await supabaseAdmin
@@ -2097,8 +2099,8 @@ app.post('/activate-mail-action', async (req, res) => {
       .update({ payload: updatedPayload })
       .eq('id', job_action_id);
 
-    console.log(`activate-mail-action: job_action ${job_action_id} → tools: ${JSON.stringify(toolResult.detectedTools)}, date: ${toolResult.detectedDate}`);
-    return res.json({ ok: true, detected_tools: toolResult.detectedTools, detected_date: toolResult.detectedDate });
+    console.log(`activate-mail-action: job_action ${job_action_id} → tools: ${JSON.stringify(toolResult.detectedTools)}, dates: ${JSON.stringify(toolResult.detectedDates)}`);
+    return res.json({ ok: true, detected_tools: toolResult.detectedTools, detected_dates: toolResult.detectedDates });
 
   } catch (e) {
     console.error('activate-mail-action error:', e);
