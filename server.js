@@ -351,7 +351,7 @@ async function runToolDetection(mail) {
       aiResponse = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500, messages: [{ role: 'user', content: `Du bist ein Assistent fuer einen Fotografen. Analysiere diese Kunden-Mail und entscheide, welche Tools benoetigt werden.\n\nVerfuegbare Tools:\n- price_list: Kunde fragt explizit nach Preisen oder Kosten\n- appointment_suggestion: Kunde moechte einen Termin vereinbaren, nennt aber kein konkretes Datum\n- offer: Kunde fragt explizit nach einem Angebot oder Kostenvoranschlag\n- availability: Kunde nennt ein konkretes Datum (z.B. Hochzeitsdatum, Veranstaltungsdatum) ODER fragt ob du an einem Datum verfuegbar bist\n\nVerfuegbare Label-Keys fuer Termine: hochzeit, standesamt, meeting, call, other, shooting, travel, editing, deadline, revision, buffer\n\nWichtig:\n- Nur Tools auswaehlen die klar aus dem Text hervorgehen\n- offer NUR wenn explizit nach einem Angebot gefragt wird\n- availability immer wenn irgendein konkretes Datum genannt wird\n- Falls availability: alle Daten als Array in detected_dates mit {date: YYYY-MM-DD, title: string, label: key}, sonst leeres Array\n- title ist eine kurze Beschreibung des Termins (z.B. Hochzeit, Standesamt, Shooting)\n- label ist der passende Label-Key aus der Liste oben\n- Falls offene Themen ausserhalb der Tools: stichpunktartig in open_topics, sonst leer\n\nAntworte NUR mit JSON:\n{tools: [availability], open_topics: , detected_dates: [{date: 2026-08-15, title: Hochzeit, label: hochzeit}]}\n\nBetreff: ${mail.subject}\nNachricht:\n${cleanText}` }] }),
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500, messages: [{ role: 'user', content: `Du bist ein Assistent fuer einen Fotografen. Analysiere diese Kunden-Mail und entscheide, welche Tools benoetigt werden.\n\nEingang der Mail: ${new Date(mail.received_at || mail.created_at || Date.now()).toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: '2-digit', day: '2-digit' })} (${new Date(mail.received_at || mail.created_at || Date.now()).toISOString().slice(0,10)})\n\nVerfuegbare Tools:\n- price_list: Kunde fragt explizit nach Preisen oder Kosten\n- appointment_suggestion: Kunde moechte einen Termin vereinbaren, nennt aber kein konkretes Datum\n- offer: Kunde fragt explizit nach einem Angebot oder Kostenvoranschlag\n- availability: Kunde nennt ein konkretes, relatives oder beschreibendes Datum (z.B. Hochzeitsdatum, Veranstaltungsdatum, naechsten Samstag, in zwei Tagen, uebernaechste Woche) ODER fragt ob du an einem Datum verfuegbar bist\n\nVerfuegbare Label-Keys fuer Termine: hochzeit, standesamt, meeting, call, other, shooting, travel, editing, deadline, revision, buffer\n\nWichtig:\n- Nur Tools auswaehlen die klar aus dem Text hervorgehen\n- offer NUR wenn explizit nach einem Angebot gefragt wird\n- availability wenn ein Datum genannt wird - auch relative Angaben wie 'diesen Samstag', 'naechste Woche Freitag', 'in drei Tagen' zaehlen\n- Bei relativen Datumsangaben: berechne das genaue Datum basierend auf dem Eingangsdatum der Mail\n- Falls availability: alle Daten als Array in detected_dates mit {date: YYYY-MM-DD, title: string, label: key}, sonst leeres Array\n- title ist eine kurze Beschreibung des Termins (z.B. Hochzeit, Standesamt, Shooting)\n- label ist der passende Label-Key aus der Liste oben\n- Falls offene Themen ausserhalb der Tools: stichpunktartig in open_topics, sonst leer\n\nAntworte NUR mit JSON:\n{tools: [availability], open_topics: , detected_dates: [{date: 2026-08-15, title: Hochzeit, label: hochzeit}]}\n\nBetreff: ${mail.subject}\nNachricht:\n${cleanText}` }] }),
       });
       if (aiResponse.status !== 529) break;
       await new Promise(r => setTimeout(r, 2000));
@@ -951,61 +951,6 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
     }
 
 
-
-        // Fünfter Loop — job_actions ohne detected_tools nachträglich analysieren
-    try {
-      const { data: pendingActions } = await supabaseAdmin
-        .from('job_actions')
-        .select('id, payload')
-        .eq('page_key', 'answer_reply')
-        .not('payload->mail_message_id', 'is', null);
-
-      const reallyPending = (pendingActions ?? []).filter(a => {
-        const tools = a.payload?.detected_tools;
-        return !tools || (Array.isArray(tools) && tools.length === 0);
-      }).slice(0, 10);
-
-      if (reallyPending.length) {
-        console.log(`Fünfter Loop: ${reallyPending.length} job_actions ohne detected_tools`);
-
-        for (const action of reallyPending) {
-          const mailMessageId = action.payload?.mail_message_id;
-          if (!mailMessageId) continue;
-
-          const { data: mail } = await supabaseAdmin
-            .from('mail_messages')
-            .select('id, subject, body_text, body_clean')
-            .eq('id', mailMessageId)
-            .single();
-
-          if (!mail) continue;
-
-          const mailForDetection = {
-            ...mail,
-            body_text: (mail.body_clean && mail.body_clean.trim()) ? mail.body_clean : mail.body_text,
-          };
-
-          try {
-            const toolResult = await runToolDetection(mailForDetection);
-            if (!toolResult.detectedTools.length && !toolResult.detectedDates.length) continue;
-
-            // JSONB merge via SQL um sicherzustellen dass der Update klappt
-            await supabaseAdmin.rpc('merge_job_action_payload', {
-              p_id: action.id,
-              p_detected_tools: toolResult.detectedTools,
-              p_open_topics: toolResult.openTopics,
-              p_detected_dates: toolResult.detectedDates,
-            });
-
-            console.log(`Fünfter Loop: job_action ${action.id} → tools: ${JSON.stringify(toolResult.detectedTools)}`);
-          } catch (e) {
-            console.error(`Fünfter Loop: error for ${action.id}:`, e.message);
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Fünfter Loop error:', e.message);
-    }
 
 return res.json({ ok: true, synced: totalSynced });
   } catch (e) {
