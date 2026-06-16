@@ -954,60 +954,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
       }
     }
 
-    // Fünfter Loop — job_actions ohne detected_tools nachträglich analysieren
-    try {
-      const { data: pendingActions } = await supabaseAdmin
-        .from('job_actions')
-        .select('id, payload')
-        .eq('page_key', 'answer_reply')
-        .not('payload->mail_message_id', 'is', null)
-        .filter('payload->detected_tools', 'eq', '[]')
-        .limit(10);
 
-      if (pendingActions?.length) {
-        console.log(`Fünfter Loop: ${pendingActions.length} job_actions ohne detected_tools`);
-
-        for (const action of pendingActions) {
-          const mailMessageId = action.payload?.mail_message_id;
-          if (!mailMessageId) continue;
-
-          const { data: mail } = await supabaseAdmin
-            .from('mail_messages')
-            .select('id, subject, body_text, body_clean')
-            .eq('id', mailMessageId)
-            .single();
-
-          if (!mail) continue;
-
-          const mailForDetection = {
-            ...mail,
-            body_text: (mail.body_clean && mail.body_clean.trim()) ? mail.body_clean : mail.body_text,
-          };
-
-          try {
-            const toolResult = await runToolDetection(mailForDetection);
-
-            await supabaseAdmin
-              .from('job_actions')
-              .update({
-                payload: {
-                  ...action.payload,
-                  detected_tools: toolResult.detectedTools,
-                  open_topics: toolResult.openTopics,
-                  detected_dates: toolResult.detectedDates,
-                }
-              })
-              .eq('id', action.id);
-
-            console.log(`Fünfter Loop: job_action ${action.id} → tools: ${JSON.stringify(toolResult.detectedTools)}`);
-          } catch (e) {
-            console.error(`Fünfter Loop: tool detection error for ${action.id}:`, e.message);
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Fünfter Loop error:', e.message);
-    }
 
     return res.json({ ok: true, synced: totalSynced });
   } catch (e) {
