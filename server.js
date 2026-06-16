@@ -366,7 +366,15 @@ async function runToolDetection(mail) {
       if (Array.isArray(parsed.tools)) detectedTools = parsed.tools.filter(t => validTools.includes(t));
       if (typeof parsed.open_topics === 'string' && parsed.open_topics.trim()) { openTopics = parsed.open_topics.trim(); detectedTools.push('sonstiges'); }
       if (Array.isArray(parsed.detected_dates)) {
-        detectedDates = parsed.detected_dates.filter(d => d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date));
+        detectedDates = parsed.detected_dates.filter(d => d.date).map(d => {
+        const dt = d.date.toString().trim();
+        // YYYY-MM-DD
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dt)) return {...d, date: dt};
+        // DD.MM.YYYY
+        const m = dt.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        if (m) return {...d, date: `${m[3]}-${m[2]}-${m[1]}`};
+        return null;
+      }).filter(Boolean);
       }
     }
   } catch (e) { console.error('Tool detection error:', e.message); }
