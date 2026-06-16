@@ -960,8 +960,8 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
         .from('job_actions')
         .select('id, payload')
         .eq('page_key', 'answer_reply')
-        .is('payload->detected_tools', null)
         .not('payload->mail_message_id', 'is', null)
+        .filter('payload->detected_tools', 'eq', '[]')
         .limit(10);
 
       if (pendingActions?.length) {
