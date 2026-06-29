@@ -1528,7 +1528,8 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 // Body: { user_id, job_id, client_id, task, mail_history }
 app.post("/ai-compose", async (req, res) => {
   try {
-    const { user_id, job_id, client_id, task } = req.body;
+    const { user_id, job_id, client_id, task, active_tools } = req.body;
+    const activeTools = Array.isArray(active_tools) ? active_tools : [];
     let { mail_history } = req.body;
     if (!user_id) return res.status(400).json({ error: "user_id required" });
 
@@ -1552,19 +1553,17 @@ app.post("/ai-compose", async (req, res) => {
       }
     }
 
-    // ── Tool-Definitionen ────────────────────────────────────────────────────
-    const tools = [
+    // ── Tool-Definitionen (gefiltert nach activeTools) ──────────────────────
+    const allTools = [
       {
         name: "get_office_hours",
+        onlyFor: ["appointment_suggestion"],
         description: "Gibt die Bürozeiten des Nutzers zurück (Wochentage + Von/Bis-Zeiten).",
-        input_schema: {
-          type: "object",
-          properties: {},
-          required: [],
-        },
+        input_schema: { type: "object", properties: {}, required: [] },
       },
       {
         name: "get_calendar_events",
+        onlyFor: ["availability"],
         description: "Gibt Kalender-Termine des Nutzers zurück die Verfügbarkeit blockieren. Nutze from/to im ISO-Format (YYYY-MM-DD).",
         input_schema: {
           type: "object",
@@ -1577,23 +1576,18 @@ app.post("/ai-compose", async (req, res) => {
       },
       {
         name: "get_client_info",
+        onlyFor: null, // immer verfügbar
         description: "Gibt Name, E-Mail und Notizen zum Kunden zurück.",
-        input_schema: {
-          type: "object",
-          properties: {},
-          required: [],
-        },
+        input_schema: { type: "object", properties: {}, required: [] },
       },
       {
         name: "get_job_info",
+        onlyFor: null, // immer verfügbar
         description: "Gibt Details zum aktuellen Job zurück (Titel, Datum, Notizen).",
-        input_schema: {
-          type: "object",
-          properties: {},
-          required: [],
-        },
+        input_schema: { type: "object", properties: {}, required: [] },
       },
     ];
+    const tools = allTools.filter(t => !t.onlyFor || t.onlyFor.some(k => activeTools.includes(k))).map(({ onlyFor, ...rest }) => rest);
 
     // ── Freie Slots serverseitig berechnen ──────────────────────────────────
     async function computeFreeSlots(maxSlots = 3, weeksAhead = 6) {
