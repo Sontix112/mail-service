@@ -1529,7 +1529,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 app.post("/ai-compose", async (req, res) => {
   try {
     const { user_id, job_id, client_id, task, active_tools } = req.body;
-    const activeTools = Array.isArray(active_tools) ? active_tools : [];
+    const activeTools = active_tools ? active_tools.split(",").filter(Boolean) : [];
     let { mail_history } = req.body;
     if (!user_id) return res.status(400).json({ error: "user_id required" });
 
