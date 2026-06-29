@@ -1540,7 +1540,7 @@ app.post("/ai-compose", async (req, res) => {
       if (task.includes('Preisliste')) activeTools.push('price_list');
       if (task.includes('Angebotspositionen')) activeTools.push('offer');
     }
-    console.log('ai-compose: active_tools resolved:', JSON.stringify(activeTools));
+    console.log('ai-compose: active_tools resolved:', JSON.stringify(activeTools), 'job_id:', job_id, 'client_id:', client_id, 'task_len:', (task||'').length, 'mail_history_len:', (mail_history||'').length);
     let { mail_history } = req.body;
     if (!user_id) return res.status(400).json({ error: "user_id required" });
 
