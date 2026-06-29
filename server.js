@@ -1530,6 +1530,7 @@ app.post("/ai-compose", async (req, res) => {
   try {
     const { user_id, job_id, client_id, task, active_tools } = req.body;
     const activeTools = Array.isArray(active_tools) ? active_tools : [];
+    console.log("ai-compose called, active_tools:", JSON.stringify(activeTools), "task length:", (task||"").length);
     let { mail_history } = req.body;
     if (!user_id) return res.status(400).json({ error: "user_id required" });
 
