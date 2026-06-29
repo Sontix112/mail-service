@@ -1762,12 +1762,12 @@ app.post("/ai-compose", async (req, res) => {
       return { error: "unknown tool" };
     }
 
-    // ── Terminvorschläge: direkt serverseitig berechnen ─────────────────────
+    // ── Terminvorschläge: direkt serverseitig berechnen (nur wenn appointment_suggestion aktiv) ──
     const now = new Date();
-    if (task && task.includes("Termine")) {
+    if (activeTools.includes('appointment_suggestion')) {
       const slots = await computeFreeSlots(3, 6);
       if (slots.length === 0) {
-        return res.json({ ok: true, text: "Keine freien Termine gefunden." });
+        return res.json({ ok: true, text: 'Keine freien Termine gefunden.' });
       }
       return res.json({ ok: true, text: slots.join("\n") });
     }
