@@ -1529,18 +1529,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 app.post("/ai-compose", async (req, res) => {
   try {
     const { user_id, job_id, client_id, task, active_tools } = req.body;
-    // active_tools aus Body oder aus task-Inhalt ableiten
-    let activeTools = Array.isArray(active_tools) && active_tools.length > 0
-      ? active_tools
-      : [];
-    // Fallback: Tools aus task-Inhalt erkennen
-    if (activeTools.length === 0 && task) {
-      if (task.includes('Verfügbarkeitsprüfung')) activeTools.push('availability');
-      if (task.includes('Terminvorschläge')) activeTools.push('appointment_suggestion');
-      if (task.includes('Preisliste')) activeTools.push('price_list');
-      if (task.includes('Angebotspositionen')) activeTools.push('offer');
-    }
-    console.log('ai-compose: active_tools resolved:', JSON.stringify(activeTools), 'job_id:', job_id, 'client_id:', client_id, 'task_len:', (task||'').length, 'mail_history_len:', (mail_history||'').length);
+    const activeTools = Array.isArray(active_tools) ? active_tools : [];
     let { mail_history } = req.body;
     if (!user_id) return res.status(400).json({ error: "user_id required" });
 
