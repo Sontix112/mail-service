@@ -587,11 +587,11 @@ ${parsed.html}
                 const isHtmlMail = !!(mail.body_html && mail.body_html.trim());
 
                 const prompt = isHtmlMail
-                  ? `Diese E-Mail wurde aus HTML in Text konvertiert. Fasse die wichtigsten Informationen übersichtlich auf Deutsch zusammen. Verwende kurze Absätze oder Stichpunkte wo sinnvoll. Entferne technische Artefakte und unwichtige Details. Gib nur die aufbereitete Version zurück, ohne Erklärung, ohne Anführungszeichen, ohne Markdown.
+                  ? `Bereite diese E-Mail auf. Behalte alle Texte EXAKT so wie sie sind - kuerze nichts, fasse nichts zusammen und aendere keine Formulierungen. Entferne nur technische Artefakte (HTML-Reste, Tracking-Pixel etc.). Markiere wichtige Informationen wie Namen, Daten, Kontaktdaten, Orte und Interessen mit **fett** (doppelte Sternchen). Gib nur den aufbereiteten Text zurueck, ohne Erklaerung, ohne Anfuehrungszeichen.
 
 E-Mail:
 ${cleanInput.slice(0, 3000)}`
-                  : `Extrahiere aus dieser E-Mail nur den eigentlichen neuen Text der aktuellen Nachricht. Entferne vollständig: zitierte Vorgänger-Mails (Zeilen die mit > beginnen), automatische Signaturen, "Von:", "Gesendet:", "An:", "Betreff:" Header-Blöcke von zitierten Mails, und typische Trennlinien wie "---" oder "___" die Zitate einleiten. Gib nur den bereinigten Text zurück, ohne Erklärung, ohne Anführungszeichen, ohne Markdown.
+                  : `Extrahiere aus dieser E-Mail nur den eigentlichen neuen Text der aktuellen Nachricht. Entferne vollstaendig: zitierte Vorgaenger-Mails (Zeilen die mit > beginnen), automatische Signaturen, "Von:", "Gesendet:", "An:", "Betreff:" Header-Bloecke von zitierten Mails, und typische Trennlinien wie "---" oder "___" die Zitate einleiten. Markiere wichtige Informationen wie Namen, Daten, Kontaktdaten, Orte und Interessen mit **fett** (doppelte Sternchen). Gib nur den bereinigten Text zurueck, ohne Erklaerung, ohne Anfuehrungszeichen.
 
 E-Mail:
 ${cleanInput.slice(0, 3000)}`;
