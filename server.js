@@ -1765,7 +1765,9 @@ app.post("/ai-compose", async (req, res) => {
     // ── Terminvorschläge: direkt serverseitig berechnen (nur wenn appointment_suggestion aktiv) ──
     const now = new Date();
     if (activeTools.includes('appointment_suggestion')) {
+      const t0 = Date.now();
       const slots = await computeFreeSlots(3, 6);
+      console.log('computeFreeSlots took:', Date.now() - t0, 'ms');
       if (slots.length === 0) {
         return res.json({ ok: true, text: 'Keine freien Termine gefunden.' });
       }
