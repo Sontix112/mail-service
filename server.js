@@ -1616,7 +1616,6 @@ app.post("/ai-compose", async (req, res) => {
         .maybeSingle();
       const officeHours = settings?.office_hours ?? [];
       if (officeHours.length === 0) return [];
-      const t1 = Date.now();
 
       // Kalender-Events laden
       const fromDate = new Date(now);
@@ -1626,8 +1625,6 @@ app.post("/ai-compose", async (req, res) => {
       const fromStr = fromDate.toISOString().split("T")[0];
       const toStr = toDate.toISOString().split("T")[0];
 
-      console.log("settings query took:", Date.now() - t1, "ms");
-      const t2 = Date.now();
       const { data: timedEvents } = await supabaseAdmin
         .from("calendar_events")
         .select("start_at, end_at, all_day, all_day_start_date, all_day_end_date")
@@ -1636,8 +1633,6 @@ app.post("/ai-compose", async (req, res) => {
         .gte("start_at", fromStr)
         .lte("start_at", toStr + "T23:59:59Z");
 
-      console.log("timedEvents query took:", Date.now() - t2, "ms");
-      const t3 = Date.now();
       const { data: allDayEvents } = await supabaseAdmin
         .from("calendar_events")
         .select("start_at, end_at, all_day, all_day_start_date, all_day_end_date")
@@ -1647,7 +1642,6 @@ app.post("/ai-compose", async (req, res) => {
         .gte("all_day_start_date", fromStr)
         .lte("all_day_start_date", toStr);
 
-      console.log("allDayEvents query took:", Date.now() - t3, "ms");
       // Belegte Daten als Set (YYYY-MM-DD)
       const busyDates = new Set();
       for (const e of (timedEvents ?? [])) {
@@ -1771,9 +1765,7 @@ app.post("/ai-compose", async (req, res) => {
     // ── Terminvorschläge: direkt serverseitig berechnen (nur wenn appointment_suggestion aktiv) ──
     const now = new Date();
     if (activeTools.includes('appointment_suggestion')) {
-      const t0 = Date.now();
       const slots = await computeFreeSlots(3, 6);
-      console.log('computeFreeSlots took:', Date.now() - t0, 'ms');
       if (slots.length === 0) {
         return res.json({ ok: true, text: 'Keine freien Termine gefunden.' });
       }
