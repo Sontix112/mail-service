@@ -754,7 +754,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                 const confidence = aiPayload.confidence ?? 0;
                 const title = confidence >= 70
-                  ? `Anfrage: ${aiPayload.event_title ?? mail.subject ?? mail.from_email}`
+                  ? `Neue Anfrage`
                   : `Mail: ${mail.subject ?? mail.from_email}`;
                 const status = confidence === 0 ? "pending" : (confidence >= 40 ? "active" : "dismissed");
 
@@ -1493,7 +1493,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
       const newStatus = confidence >= 40 ? "active" : "dismissed";
       const title = confidence >= 70
-        ? `Anfrage: ${aiResult.event_title ?? mail.subject ?? mail.from_email}`
+        ? `Neue Anfrage`
         : `Mail: ${mail.subject ?? mail.from_email}`;
 
       const aiPayload = {
