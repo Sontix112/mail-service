@@ -1758,6 +1758,7 @@ app.post("/ai-compose", async (req, res) => {
     }
 
     // ── Agentic Loop ─────────────────────────────────────────────────────────
+    const now = new Date();
     const today = now.toISOString().split("T")[0];
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const messages = [
