@@ -1572,12 +1572,7 @@ app.post("/ai-compose", async (req, res) => {
 
     // ── Tool-Definitionen (gefiltert nach activeTools) ──────────────────────
     const allTools = [
-      {
-        name: "get_office_hours",
-        onlyFor: ["appointment_suggestion"],
-        description: "Gibt die Bürozeiten des Nutzers zurück (Wochentage + Von/Bis-Zeiten).",
-        input_schema: { type: "object", properties: {}, required: [] },
-      },
+
       {
         name: "get_calendar_events",
         onlyFor: ["availability"],
