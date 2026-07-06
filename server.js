@@ -1762,21 +1762,6 @@ app.post("/ai-compose", async (req, res) => {
       return { error: "unknown tool" };
     }
 
-    // ── Terminvorschläge: direkt serverseitig berechnen (nur wenn appointment_suggestion aktiv) ──
-    const now = new Date();
-    if (activeTools.includes('appointment_suggestion')) {
-      const { data: slotsData, error: slotsErr } = await supabaseAdmin.rpc('get_free_slots', {
-        p_user_id: user_id,
-        p_weeks_ahead: 6,
-        p_max_slots: 3,
-      });
-      if (slotsErr || !slotsData || slotsData.length === 0) {
-        return res.json({ ok: true, text: 'Keine freien Termine gefunden.' });
-      }
-      const slotTexts = slotsData.map(s => s.display);
-      return res.json({ ok: true, text: slotTexts.join("\n") });
-    }
-
     // ── Agentic Loop ─────────────────────────────────────────────────────────
     const today = now.toISOString().split("T")[0];
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().split("T")[0];
