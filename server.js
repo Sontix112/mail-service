@@ -1797,7 +1797,7 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
             "anthropic-version": "2023-06-01",
           },
           body: JSON.stringify({
-            model: isUpdateTask ? "claude-sonnet-4-5" : "claude-haiku-4-5-20251001", // TEMP: sonnet nur zum Testen des Update-Modus
+            model: isUpdateTask ? "claude-sonnet-4-5" : "claude-haiku-4-5-20251001", // Sonnet für Update-Task (komplexerer Abgleich/Vergleich), Haiku für normale Generierung
             max_tokens: 1024,
             tools,
             messages,
