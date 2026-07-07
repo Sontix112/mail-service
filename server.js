@@ -1599,7 +1599,10 @@ app.post("/ai-compose", async (req, res) => {
         input_schema: { type: "object", properties: {}, required: [] },
       },
     ];
-    const tools = allTools.filter(t => !t.onlyFor || t.onlyFor.some(k => activeTools.includes(k))).map(({ onlyFor, ...rest }) => rest);
+    const isUpdateTask = !!(task && task.includes("bereits verfasster Mailtext"));
+    const tools = isUpdateTask
+      ? []
+      : allTools.filter(t => !t.onlyFor || t.onlyFor.some(k => activeTools.includes(k))).map(({ onlyFor, ...rest }) => rest);
 
     // ── Freie Slots serverseitig berechnen ──────────────────────────────────
     async function computeFreeSlots(maxSlots = 3, weeksAhead = 6) {
