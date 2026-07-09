@@ -1819,7 +1819,7 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
             "anthropic-version": "2023-06-01",
           },
           body: JSON.stringify({
-            model: isUpdateTask ? "claude-sonnet-4-5" : "claude-haiku-4-5-20251001", // Sonnet für Update-Task (komplexerer Abgleich/Vergleich), Haiku für normale Generierung
+            model: (isUpdateTask || (activeTools.includes('availability') && activeTools.includes('appointment_suggestion'))) ? "claude-sonnet-4-5" : "claude-haiku-4-5-20251001", // Sonnet für Update-Task oder komplexe Tool-Kombis (Verfügbarkeit+Termine), Haiku sonst
             max_tokens: 1024,
             tools,
             messages,
