@@ -337,6 +337,20 @@ app.post("/list-mails", async (req, res) => {
   }
 });
 // ── Shared Tool-Detection Helper ─────────────────────────────────────────────
+function toBerlinDateTime(startAt) {
+  const d = new Date(startAt);
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Berlin',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  const parts = fmt.formatToParts(d).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`,
+  };
+}
+
 async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
   let detectedTools = [];
   let openTopics = '';
@@ -937,13 +951,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   .eq('status', 'tentative')
                   .not('suggestion_group_id', 'is', null);
 
-                const pendingSlots = (pendingSlotRows || []).map(r => {
-                  const d = new Date(r.start_at);
-                  return {
-                    date: d.toISOString().slice(0, 10),
-                    time: d.toISOString().slice(11, 16),
-                  };
-                });
+                const pendingSlots = (pendingSlotRows || []).map(r => toBerlinDateTime(r.start_at));
 
                 // Bereits bestaetigte Termine fuer diesen Kunden laden
                 const { data: confirmedSlotRows } = await supabaseAdmin
@@ -953,13 +961,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   .eq('client_id', matchedClient.id)
                   .eq('status', 'confirmed');
 
-                const confirmedSlots = (confirmedSlotRows || []).map(r => {
-                  const d = new Date(r.start_at);
-                  return {
-                    date: d.toISOString().slice(0, 10),
-                    time: d.toISOString().slice(11, 16),
-                  };
-                });
+                const confirmedSlots = (confirmedSlotRows || []).map(r => toBerlinDateTime(r.start_at));
 
                 const toolResult = await runToolDetection(mail, pendingSlots, confirmedSlots);
 
