@@ -386,6 +386,11 @@ async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
         return null;
       }).filter(Boolean);
       }
+      // Deterministisch: appointment_change mit neuem Termin erzwingt availability
+      // (nicht dem Modell ueberlassen, ob es das zusaetzliche Tool waehlt)
+      if (detectedTools.includes('appointment_change') && detectedDates.some(d => d.change_type === 'new') && !detectedTools.includes('availability')) {
+        detectedTools.push('availability');
+      }
     }
   } catch (e) { console.error('Tool detection error:', e.message); }
   return { detectedTools, openTopics, detectedDates };
