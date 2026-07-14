@@ -358,8 +358,10 @@ async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
   try {
     let confirmedHint = '';
     if (confirmedSlots && confirmedSlots.length > 0) {
-      const lines = confirmedSlots.map(function(s) { return '- ' + s.date + ' um ' + s.time + ' Uhr'; }).join('\n');
-      confirmedHint = '\n\nWICHTIG - Bereits bestaetigte Termine mit diesem Kunden:\n' + lines + '\nFalls der Kunde einen dieser Termine verschieben oder absagen moechte, nutze das Tool appointment_change. Gib in detected_dates ZWEI Eintraege zurueck falls ein neues Datum genannt wird: zuerst den ALTEN Termin (das bestaetigte Datum das geaendert werden soll, label "old"), dann den NEUEN Termin falls der Kunde einen konkreten neuen Termin nennt (label "new"). Falls der Kunde KEIN neues Datum nennt (nur Absage/Bitte um neuen Vorschlag), gib NUR den alten Termin zurueck (label "old"). WICHTIG ZUR UHRZEIT: Wenn der Kunde beim neuen Termin keine eigene Uhrzeit nennt oder ausdruecklich "zur selben Zeit", "gleiche Uhrzeit" o.ae. schreibt, uebernimm EXAKT die Uhrzeit des ALTEN Termins fuer den neuen Termin - erfinde KEINE neue Uhrzeit.';
+      const lines = confirmedSlots.map(function(s) {
+        return s.allDay ? ('- ' + s.date + ' (ganztaegig, ohne feste Uhrzeit)') : ('- ' + s.date + ' um ' + s.time + ' Uhr');
+      }).join('\n');
+      confirmedHint = '\n\nWICHTIG - Bereits bestaetigte Termine mit diesem Kunden:\n' + lines + '\nFalls der Kunde einen dieser Termine verschieben oder absagen moechte, nutze das Tool appointment_change. Gib in detected_dates ZWEI Eintraege zurueck falls ein neues Datum genannt wird: zuerst den ALTEN Termin (das bestaetigte Datum das geaendert werden soll, label "old"), dann den NEUEN Termin falls der Kunde einen konkreten neuen Termin nennt (label "new"). Falls der Kunde KEIN neues Datum nennt (nur Absage/Bitte um neuen Vorschlag), gib NUR den alten Termin zurueck (label "old"). WICHTIG ZUR UHRZEIT: Wenn der Kunde beim neuen Termin keine eigene Uhrzeit nennt oder ausdruecklich "zur selben Zeit", "gleiche Uhrzeit" o.ae. schreibt, uebernimm EXAKT die Uhrzeit des ALTEN Termins fuer den neuen Termin (falls vorhanden) - erfinde KEINE neue Uhrzeit. Bei ganztaegigen Terminen (ohne Uhrzeit) lasse das Feld "time" in detected_dates einfach weg bzw. leer.';
     }
     const cleanText = (mail.body_text ?? '')
       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
@@ -953,15 +955,20 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                 const pendingSlots = (pendingSlotRows || []).map(r => toBerlinDateTime(r.start_at));
 
-                // Bereits bestaetigte Termine fuer diesen Kunden laden
+                // Bereits bestaetigte Termine fuer diesen Kunden laden (zeitgebunden UND ganztaegig)
                 const { data: confirmedSlotRows } = await supabaseAdmin
                   .from('calendar_events')
-                  .select('start_at')
+                  .select('start_at, all_day, all_day_start_date')
                   .eq('user_id', mail.user_id)
                   .eq('client_id', matchedClient.id)
                   .eq('status', 'confirmed');
 
-                const confirmedSlots = (confirmedSlotRows || []).map(r => toBerlinDateTime(r.start_at));
+                const confirmedSlots = (confirmedSlotRows || []).map(r => {
+                  if (r.all_day) {
+                    return { date: r.all_day_start_date, time: null, allDay: true };
+                  }
+                  return { ...toBerlinDateTime(r.start_at), allDay: false };
+                });
 
                 const toolResult = await runToolDetection(mail, pendingSlots, confirmedSlots);
 
