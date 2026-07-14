@@ -961,7 +961,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   .select('start_at, all_day, all_day_start_date')
                   .eq('user_id', mail.user_id)
                   .eq('client_id', matchedClient.id)
-                  .eq('status', 'confirmed');
+                  .in('status', ['tentative', 'confirmed']);
 
                 const confirmedSlots = (confirmedSlotRows || []).map(r => {
                   if (r.all_day) {
