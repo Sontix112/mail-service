@@ -405,6 +405,11 @@ async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
       if (detectedTools.includes('appointment_change') && detectedDates.some(d => d.change_type === 'new') && !detectedTools.includes('availability')) {
         detectedTools.push('availability');
       }
+      // Deterministisch: appointment_change OHNE neuen Termin (reine Absage/Bitte um neuen Vorschlag)
+      // erzwingt appointment_suggestion
+      if (detectedTools.includes('appointment_change') && !detectedDates.some(d => d.change_type === 'new') && !detectedTools.includes('appointment_suggestion')) {
+        detectedTools.push('appointment_suggestion');
+      }
     }
   } catch (e) { console.error('Tool detection error:', e.message); }
   return { detectedTools, openTopics, detectedDates };
