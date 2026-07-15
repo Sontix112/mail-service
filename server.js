@@ -1868,7 +1868,7 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
           body: JSON.stringify({
             model: (isUpdateTask || (activeTools.includes('availability') && activeTools.includes('appointment_suggestion'))) ? "claude-sonnet-4-5" : "claude-haiku-4-5-20251001", // Sonnet für Update-Task oder komplexe Tool-Kombis (Verfügbarkeit+Termine), Haiku sonst
             max_tokens: 1024,
-            temperature: 0,
+            temperature: 0.5,
             tools,
             messages,
             system: "Du bist ein Assistent für einen Fotografen. Du schreibst professionelle, freundliche E-Mails auf Deutsch. Sammle zuerst alle nötigen Informationen über die Tools, dann schreibe die E-Mail.",
