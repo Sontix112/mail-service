@@ -356,6 +356,7 @@ async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
   let openTopics = '';
   let detectedDates = [];
   let suggestionPurpose = '';
+  let offerResponseSummary = '';
   try {
     let confirmedHint = '';
     if (confirmedSlots && confirmedSlots.length > 0) {
@@ -368,8 +369,8 @@ async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n');
-    const detectionPrompt = `Du bist ein Assistent fuer einen Fotografen. Analysiere diese Kunden-Mail und entscheide, welche Tools benoetigt werden.${confirmedHint}\n\nEingang der Mail: ${new Date(mail.received_at || mail.created_at || Date.now()).toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: '2-digit', day: '2-digit' })} (${new Date(mail.received_at || mail.created_at || Date.now()).toISOString().slice(0,10)})\n\nVerfuegbare Tools:\n- price_list: Kunde fragt explizit nach Preisen oder Kosten\n- appointment_suggestion: Kunde fragt EXPLIZIT nach einem Gespraechstermin/Call/Kennenlernen (z.B. 'wann koennen wir telefonieren', 'lass uns mal sprechen', 'wann passt ein Kennenlernen'), nennt aber kein konkretes Datum. WICHTIG: Waehle dieses Tool NIEMALS nur weil es eine Erstanfrage/neue Anfrage ist - nur wenn der Kunde tatsaechlich explizit einen Gespraechstermin wuenscht.\n- appointment_change: Kunde moechte einen der oben aufgelisteten bereits BESTAETIGTEN Termine verschieben oder absagen\n- offer: Kunde fragt explizit nach einem Angebot oder Kostenvoranschlag\n- availability: Kunde nennt ein konkretes, relatives oder beschreibendes Datum (z.B. Hochzeitsdatum, Veranstaltungsdatum, naechsten Samstag, in zwei Tagen, uebernaechste Woche) ODER fragt ob du an einem Datum verfuegbar bist\n- job_confirmation: Kunde bestaetigt VERBINDLICH den GESAMTEN AUFTRAG/die Zusammenarbeit als Ganzes (z.B. 'wir nehmen das Angebot an', 'wir moechten bei dir buchen', 'wir bestaetigen hiermit den Auftrag', 'wir wollen mit dir zusammenarbeiten'). WICHTIG - NICHT VERWECHSELN: job_confirmation bezieht sich auf die Buchung/den Auftrag ALS GANZES, NICHT auf die Bestaetigung eines einzelnen Termins/Zeitpunkts (das ist availability, z.B. 'ja der 16.07 um 09:00 passt uns'). Nur waehlen wenn der Kunde erkennbar 'Ja, wir wollen das machen/buchen' zum GESAMTEN Auftrag sagt.\n\nVerfuegbare Label-Keys fuer Termine: hochzeit, standesamt, meeting, call, other, shooting, travel, editing, deadline, revision, buffer\n\nWichtig:\n- Nur Tools auswaehlen die klar aus dem Text hervorgehen\n- offer NUR wenn explizit nach einem Angebot gefragt wird\n- availability wenn ein Datum genannt wird - auch relative Angaben wie 'diesen Samstag', 'naechste Woche Freitag', 'in drei Tagen' zaehlen\n- Bei relativen Datumsangaben: berechne das genaue Datum basierend auf dem Eingangsdatum der Mail\n- Falls appointment_change: siehe Anweisung oben zu den bestaetigten Terminen - detected_dates enthaelt ein oder zwei Eintraege mit zusaetzlichem Feld "change_type": "old" oder "new"
-- Falls appointment_suggestion: gib zusaetzlich ein Feld "suggestion_purpose" an - ein kurzer, praegnanter Zweck/Anlass fuer die vorgeschlagenen Termine (z.B. "Kennenlerngespraech", "Telefonat", "Besprechung"), basierend auf dem Kontext der Mail. Dieser Zweck ist KOMPLETT UNABHAENGIG von einer eventuell an anderer Stelle im Text erwaehnten Verfuegbarkeit fuer ein Ereignis/Event/Hochzeitsdatum - beides sind getrennte Themen, auch wenn sie in derselben Mail vorkommen.\n- Falls availability: alle Daten als Array in detected_dates mit {date: YYYY-MM-DD, title: string, label: key}, sonst leeres Array\n- title ist eine kurze Beschreibung des Termins (z.B. Hochzeit, Standesamt, Shooting)\n- label ist der passende Label-Key aus der Liste oben\n- open_topics IMMER wenn der Kunde eine direkte Frage an dich stellt oder einen Punkt anspricht der vom Fotografen beantwortet werden muss und nicht durch die anderen Tools abgedeckt ist - das gilt auch fuer kurze, beilaeufig wirkende Einzelfragen. Reine Hintergrundinformationen OHNE Frage (z.B. Locations, Gaestezahl, Stil etc.) gehoeren NICHT in open_topics. Wenn keine echte offene Frage vorhanden: open_topics leer lassen\n\nAntworte NUR mit JSON:\n{reasoning: <kurze Begruendung in 1-2 Saetzen warum genau diese Tools gewaehlt wurden, insbesondere WARUM appointment_suggestion oder appointment_change gewaehlt wurde falls zutreffend>, tools: [availability], open_topics: , detected_dates: [{date: 2026-08-15, title: Hochzeit, label: hochzeit}]}\n\nBetreff: ${mail.subject}\nNachricht:\n${cleanText}`;
+    const detectionPrompt = `Du bist ein Assistent fuer einen Fotografen. Analysiere diese Kunden-Mail und entscheide, welche Tools benoetigt werden.${confirmedHint}\n\nEingang der Mail: ${new Date(mail.received_at || mail.created_at || Date.now()).toLocaleDateString('de-DE', { weekday: 'long', year: 'numeric', month: '2-digit', day: '2-digit' })} (${new Date(mail.received_at || mail.created_at || Date.now()).toISOString().slice(0,10)})\n\nVerfuegbare Tools:\n- price_list: Kunde fragt explizit nach Preisen oder Kosten\n- appointment_suggestion: Kunde fragt EXPLIZIT nach einem Gespraechstermin/Call/Kennenlernen (z.B. 'wann koennen wir telefonieren', 'lass uns mal sprechen', 'wann passt ein Kennenlernen'), nennt aber kein konkretes Datum. WICHTIG: Waehle dieses Tool NIEMALS nur weil es eine Erstanfrage/neue Anfrage ist - nur wenn der Kunde tatsaechlich explizit einen Gespraechstermin wuenscht.\n- appointment_change: Kunde moechte einen der oben aufgelisteten bereits BESTAETIGTEN Termine verschieben oder absagen\n- offer: Kunde fragt explizit nach einem Angebot oder Kostenvoranschlag\n- availability: Kunde nennt ein konkretes, relatives oder beschreibendes Datum (z.B. Hochzeitsdatum, Veranstaltungsdatum, naechsten Samstag, in zwei Tagen, uebernaechste Woche) ODER fragt ob du an einem Datum verfuegbar bist\n- offer_response: Kunde meldet sich zum GESAMTEN AUFTRAG/Angebot als Ganzes zurueck - das deckt DREI Faelle ab: (1) Kunde bestaetigt VERBINDLICH den gesamten Auftrag OHNE Aenderungswuensche (z.B. 'wir nehmen das Angebot an', 'wir moechten bei dir buchen', 'wir bestaetigen hiermit den Auftrag', 'wir wollen mit dir zusammenarbeiten'), (2) Kunde bestaetigt VERBINDLICH, wuenscht aber gleichzeitig Aenderungen am Angebot (z.B. 'wir sagen zu, aber gerne ohne den Instagram-Rabatt und mit 12 statt 9 Stunden'), (3) Kunde aeussert Aenderungswuensche zu einem Angebot OHNE bereits verbindlich zuzusagen (z.B. 'koennt ihr statt 9 lieber 12 Stunden anbieten?'). WICHTIG - NICHT VERWECHSELN: offer_response bezieht sich auf die Buchung/das Angebot ALS GANZES, NICHT auf die Bestaetigung eines einzelnen Termins/Zeitpunkts (das ist availability, z.B. 'ja der 16.07 um 09:00 passt uns'). Nur waehlen wenn der Kunde sich erkennbar auf ein Angebot/den Gesamtauftrag bezieht (zusagt und/oder Aenderungen dazu aeussert).\n\nVerfuegbare Label-Keys fuer Termine: hochzeit, standesamt, meeting, call, other, shooting, travel, editing, deadline, revision, buffer\n\nWichtig:\n- Nur Tools auswaehlen die klar aus dem Text hervorgehen\n- offer NUR wenn explizit nach einem Angebot gefragt wird\n- availability wenn ein Datum genannt wird - auch relative Angaben wie 'diesen Samstag', 'naechste Woche Freitag', 'in drei Tagen' zaehlen\n- Bei relativen Datumsangaben: berechne das genaue Datum basierend auf dem Eingangsdatum der Mail\n- Falls appointment_change: siehe Anweisung oben zu den bestaetigten Terminen - detected_dates enthaelt ein oder zwei Eintraege mit zusaetzlichem Feld "change_type": "old" oder "new"
+- Falls appointment_suggestion: gib zusaetzlich ein Feld "suggestion_purpose" an - ein kurzer, praegnanter Zweck/Anlass fuer die vorgeschlagenen Termine (z.B. "Kennenlerngespraech", "Telefonat", "Besprechung"), basierend auf dem Kontext der Mail. Dieser Zweck ist KOMPLETT UNABHAENGIG von einer eventuell an anderer Stelle im Text erwaehnten Verfuegbarkeit fuer ein Ereignis/Event/Hochzeitsdatum - beides sind getrennte Themen, auch wenn sie in derselben Mail vorkommen.\n- Falls offer_response: gib zusaetzlich ein Feld "offer_response_summary" an - NUR falls der Kunde konkrete Aenderungswuensche zum Angebot aeussert (z.B. "kein Instagram-Rabatt, dafuer 12 statt 9 Stunden"), als kurze, stichpunktartige Zusammenfassung dieser Aenderungswuensche. Falls der Kunde OHNE Aenderungswuensche zusagt, lasse "offer_response_summary" leer bzw. weg.\n- Falls availability: alle Daten als Array in detected_dates mit {date: YYYY-MM-DD, title: string, label: key}, sonst leeres Array\n- title ist eine kurze Beschreibung des Termins (z.B. Hochzeit, Standesamt, Shooting)\n- label ist der passende Label-Key aus der Liste oben\n- open_topics IMMER wenn der Kunde eine direkte Frage an dich stellt oder einen Punkt anspricht der vom Fotografen beantwortet werden muss und nicht durch die anderen Tools abgedeckt ist - das gilt auch fuer kurze, beilaeufig wirkende Einzelfragen. Reine Hintergrundinformationen OHNE Frage (z.B. Locations, Gaestezahl, Stil etc.) gehoeren NICHT in open_topics. Wenn keine echte offene Frage vorhanden: open_topics leer lassen\n\nAntworte NUR mit JSON:\n{reasoning: <kurze Begruendung in 1-2 Saetzen warum genau diese Tools gewaehlt wurden, insbesondere WARUM appointment_suggestion oder appointment_change gewaehlt wurde falls zutreffend>, tools: [availability], open_topics: , detected_dates: [{date: 2026-08-15, title: Hochzeit, label: hochzeit}]}\n\nBetreff: ${mail.subject}\nNachricht:\n${cleanText}`;
     console.log('Tool detection prompt:', detectionPrompt);
     let aiResponse;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -387,7 +388,7 @@ async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
     const objectMatch = rawText.match(/\{[\s\S]*\}/);
     if (objectMatch) {
       const parsed = JSON.parse(objectMatch[0]);
-      const validTools = ['price_list', 'appointment_suggestion', 'appointment_change', 'offer', 'availability', 'job_confirmation'];
+      const validTools = ['price_list', 'appointment_suggestion', 'appointment_change', 'offer', 'availability', 'offer_response'];
       if (parsed.reasoning) console.log('Tool detection reasoning:', parsed.reasoning);
       if (Array.isArray(parsed.tools)) detectedTools = parsed.tools.filter(t => validTools.includes(t));
       if (parsed.open_topics) { if (Array.isArray(parsed.open_topics) && parsed.open_topics.length > 0) { openTopics = parsed.open_topics.join(', '); detectedTools.push('sonstiges'); } else if (typeof parsed.open_topics === 'string' && parsed.open_topics.trim()) { openTopics = parsed.open_topics.trim(); detectedTools.push('sonstiges'); } }
@@ -405,6 +406,9 @@ async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
       if (typeof parsed.suggestion_purpose === 'string' && parsed.suggestion_purpose.trim()) {
         suggestionPurpose = parsed.suggestion_purpose.trim();
       }
+      if (typeof parsed.offer_response_summary === 'string' && parsed.offer_response_summary.trim()) {
+        offerResponseSummary = parsed.offer_response_summary.trim();
+      }
       // Deterministisch: appointment_change mit neuem Termin erzwingt availability
       // (nicht dem Modell ueberlassen, ob es das zusaetzliche Tool waehlt)
       if (detectedTools.includes('appointment_change') && detectedDates.some(d => d.change_type === 'new') && !detectedTools.includes('availability')) {
@@ -417,7 +421,7 @@ async function runToolDetection(mail, pendingSlots = [], confirmedSlots = []) {
       }
     }
   } catch (e) { console.error('Tool detection error:', e.message); }
-  return { detectedTools, openTopics, detectedDates, suggestionPurpose };
+  return { detectedTools, openTopics, detectedDates, suggestionPurpose, offerResponseSummary };
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -885,6 +889,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   const openTopics = toolResult.openTopics;
                   const detectedDates = toolResult.detectedDates;
                   const suggestionPurpose = toolResult.suggestionPurpose;
+                  const offerResponseSummary = toolResult.offerResponseSummary;
 
                   await supabaseAdmin
                     .from("job_actions")
@@ -907,6 +912,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                         open_topics: openTopics,
                         detected_dates: detectedDates,
                         suggestion_purpose: suggestionPurpose,
+                        offer_response_summary: offerResponseSummary,
                       },
                     });
 
@@ -1003,6 +1009,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                       open_topics: toolResult.openTopics,
                       detected_dates: toolResult.detectedDates,
                       suggestion_purpose: toolResult.suggestionPurpose,
+                      offer_response_summary: toolResult.offerResponseSummary,
                     },
                   });
 
@@ -1964,6 +1971,7 @@ app.post("/link-mail-to-job", async (req, res) => {
     let openTopics = [];
     let detectedDates = [];
     let suggestionPurpose = '';
+    let offerResponseSummary = '';
 
     if (existingAction.mail_message_id) {
       const { data: mail } = await supabaseAdmin
@@ -1979,6 +1987,7 @@ app.post("/link-mail-to-job", async (req, res) => {
           openTopics = toolResult.openTopics;
           detectedDates = toolResult.detectedDates;
           suggestionPurpose = toolResult.suggestionPurpose;
+          offerResponseSummary = toolResult.offerResponseSummary;
         } catch (e) {
           console.error("Tool detection error:", e.message);
         }
@@ -1995,6 +2004,7 @@ app.post("/link-mail-to-job", async (req, res) => {
       open_topics: openTopics,
       detected_dates: detectedDates,
       suggestion_purpose: suggestionPurpose,
+      offer_response_summary: offerResponseSummary,
     };
 
     const { error: updateErr } = await supabaseAdmin
@@ -2110,6 +2120,7 @@ app.post('/activate-mail-action', async (req, res) => {
       open_topics: toolResult.openTopics,
       detected_dates: toolResult.detectedDates,
       suggestion_purpose: toolResult.suggestionPurpose,
+      offer_response_summary: toolResult.offerResponseSummary,
     };
 
     await supabaseAdmin
