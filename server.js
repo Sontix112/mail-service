@@ -32,6 +32,11 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 
+// Verhindert, dass sich zwei Sync-Laeufe ueberlappen (Cron + App-Trigger).
+// Ueberlappende Laeufe lesen beide den Dedup-Stand, bevor einer geschrieben hat,
+// und legen dieselbe Mail doppelt an.
+let syncRunning = false;
+
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -431,6 +436,12 @@ app.post("/sync-all-inboxes", async (req, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  if (syncRunning) {
+    console.log("sync-all-inboxes: Lauf laeuft bereits, dieser Aufruf wird uebersprungen");
+    return res.json({ ok: true, synced: 0, skipped: true, message: "Sync already running" });
+  }
+  syncRunning = true;
+
   try {
     const { data: accounts, error: accountsErr } = await supabaseAdmin
       .from("mail_accounts")
@@ -455,11 +466,21 @@ app.post("/sync-all-inboxes", async (req, res) => {
         continue;
       }
 
-      const { data: existing } = await supabaseAdmin
+      const { data: existing, error: existingErr } = await supabaseAdmin
         .from("mail_messages")
         .select("provider_message_id")
         .eq("mail_account_id", account.id)
         .eq("direction", "incoming");
+
+      // Ohne belastbaren Dedup-Stand darf nicht importiert werden — sonst wird
+      // bei einem Supabase-Timeout das komplette Postfach erneut angelegt.
+      if (existingErr) {
+        console.error(
+          `dedup select failed for account ${account.id}, skipping account:`,
+          existingErr.message
+        );
+        continue;
+      }
 
       const existingIds = new Set(
         (existing ?? []).map((m) => m.provider_message_id).filter(Boolean)
@@ -589,11 +610,19 @@ ${parsed.html}
           if (newMails.length > 0) {
             const { data: insertedMails, error: insertErr } = await supabaseAdmin
               .from("mail_messages")
-              .insert(newMails)
+              // Unique Index (mail_account_id, provider_message_id): bereits vorhandene
+              // Mails werden ignoriert. .select() liefert nur die wirklich neuen Zeilen,
+              // die Folge-Loops laufen also nie erneut auf einer alten Mail.
+              .upsert(newMails, {
+                onConflict: "mail_account_id,provider_message_id",
+                ignoreDuplicates: true,
+              })
               .select("id, from_email, subject, body_text, body_html, body_preview, received_at, in_reply_to_message_id, user_id");
 
             if (insertErr) {
               console.error("insert error:", insertErr.message);
+            } else if (!insertedMails?.length) {
+              console.log("Keine neuen Mails (alle bereits vorhanden)");
             } else {
               totalSynced += insertedMails.length;
 
@@ -1032,6 +1061,8 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 return res.json({ ok: true, synced: totalSynced });
   } catch (e) {
     return res.status(500).json({ error: e?.message ?? String(e) });
+  } finally {
+    syncRunning = false;
   }
 });
 
