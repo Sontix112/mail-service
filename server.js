@@ -42,6 +42,17 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY,
 );
 
+// Domain einer Mailadresse, klein geschrieben. Null wenn keine Adresse.
+function emailDomain(addr) {
+  const m = String(addr ?? "").toLowerCase().trim().match(/@([^@\s>]+)$/);
+  return m ? m[1] : null;
+}
+
+function normalizeEmail(addr) {
+  const v = String(addr ?? "").toLowerCase().trim();
+  return v.includes("@") ? v : null;
+}
+
 // Base64 helper
 function fromBase64(base64) {
   return Uint8Array.from(Buffer.from(base64, "base64"));
@@ -586,6 +597,16 @@ ${parsed.html}
               const fromEmail = msg.envelope?.from?.[0]?.address ?? "";
               const toEmail = msg.envelope?.to?.[0]?.address ?? "";
 
+              // Absenderadresse ist die Transportadresse, nicht zwingend die des Kunden.
+              // Kontaktformulare setzen Reply-To auf den Absender des Formulars — das ist
+              // RFC-Standard und damit providerunabhaengig.
+              const replyToEmail = normalizeEmail(msg.envelope?.replyTo?.[0]?.address);
+              const fromNormalized = normalizeEmail(fromEmail);
+              const contactEmail =
+                replyToEmail && replyToEmail !== fromNormalized
+                  ? replyToEmail
+                  : fromNormalized;
+
               newMails.push({
                 user_id: account.user_id,
                 mail_account_id: account.id,
@@ -598,6 +619,8 @@ ${parsed.html}
                 body_html: bodyHtml,
                 body_preview: bodyPreview,
                 in_reply_to_message_id: inReplyTo ?? null,
+                reply_to_email: replyToEmail,
+                contact_email: contactEmail,
                 received_at: receivedAt
                   ? receivedAt.toISOString()
                   : new Date().toISOString(),
@@ -617,7 +640,7 @@ ${parsed.html}
                 onConflict: "mail_account_id,provider_message_id",
                 ignoreDuplicates: true,
               })
-              .select("id, from_email, subject, body_text, body_html, body_preview, received_at, in_reply_to_message_id, user_id");
+              .select("id, from_email, subject, body_text, body_html, body_preview, received_at, in_reply_to_message_id, user_id, reply_to_email, contact_email");
 
             if (insertErr) {
               console.error("insert error:", insertErr.message);
@@ -824,6 +847,32 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                   aiPayload = { ...aiPayload, ...aiResult };
                 } catch (e) {
                   console.error("AI analysis error:", e.message);
+                }
+
+                // Steht im Mailtext eine Kundenadresse mit anderer Domain als der
+                // Absender, ist der Absender ein Formular-/Weiterleitungssystem.
+                // Rein generisch — kein Provider-Wissen noetig.
+                try {
+                  const bodyEmail = normalizeEmail(aiPayload.email);
+                  const fromDomain = emailDomain(mail.from_email);
+                  const bodyDomain = emailDomain(bodyEmail);
+
+                  if (bodyEmail && bodyDomain && fromDomain && bodyDomain !== fromDomain) {
+                    const patch = { sender_is_forwarder: true };
+                    // Reply-To hat Vorrang: es kommt aus dem Header, nicht aus der KI.
+                    if (!mail.reply_to_email) patch.contact_email = bodyEmail;
+
+                    await supabaseAdmin
+                      .from("mail_messages")
+                      .update(patch)
+                      .eq("id", mail.id);
+
+                    console.log(
+                      `Forwarder erkannt: Absender ${mail.from_email}, Kundenadresse im Text ${bodyEmail}, contact_email ${patch.contact_email ? `auf ${bodyEmail} gesetzt` : `bleibt Reply-To ${mail.reply_to_email}`}`
+                    );
+                  }
+                } catch (e) {
+                  console.error(`contact_email resolve error for mail ${mail.id}:`, e.message);
                 }
 
                 const confidence = aiPayload.confidence ?? 0;
