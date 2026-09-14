@@ -53,6 +53,47 @@ function normalizeEmail(addr) {
   return v.includes("@") ? v : null;
 }
 
+// Ermittelt den Kunden zu einer eingehenden Mail.
+// Basis ist contact_email, nicht from_email: bei Kontaktformularen ist from_email
+// die Adresse des Formular-Systems, nicht die des Kunden.
+async function findClientForMail(mail) {
+  const contact =
+    normalizeEmail(mail.contact_email) ?? normalizeEmail(mail.from_email);
+
+  if (contact) {
+    const { data } = await supabaseAdmin
+      .from("client_emails")
+      .select("client_id")
+      .eq("user_id", mail.user_id)
+      .eq("email", contact)
+      .limit(1)
+      .maybeSingle();
+
+    if (data?.client_id) {
+      return { clientId: data.client_id, contactEmail: contact, via: "email" };
+    }
+  }
+
+  // Rueckfall: Antwort auf eine Mail, die bereits einem Kunden zugeordnet ist.
+  // Greift, wenn der Kunde von einer noch unbekannten Adresse antwortet.
+  if (mail.in_reply_to_message_id) {
+    const { data } = await supabaseAdmin
+      .from("mail_messages")
+      .select("client_id")
+      .eq("user_id", mail.user_id)
+      .eq("provider_message_id", mail.in_reply_to_message_id)
+      .not("client_id", "is", null)
+      .limit(1)
+      .maybeSingle();
+
+    if (data?.client_id) {
+      return { clientId: data.client_id, contactEmail: contact, via: "thread" };
+    }
+  }
+
+  return { clientId: null, contactEmail: contact, via: null };
+}
+
 // Base64 helper
 function fromBase64(base64) {
   return Uint8Array.from(Buffer.from(base64, "base64"));
@@ -651,22 +692,18 @@ ${parsed.html}
 
               // Nullter Loop — Client-ID für bekannte Absender setzen
               for (const mail of insertedMails) {
-                if (!mail.from_email) continue;
-
-                const { data: matchingClient } = await supabaseAdmin
-                  .from("clients")
-                  .select("id")
-                  .eq("user_id", mail.user_id)
-                  .eq('email', mail.from_email)
-                  .limit(1)
-                  .maybeSingle();
-
-                if (!matchingClient) continue;
+                const { clientId, contactEmail, via } = await findClientForMail(mail);
+                if (!clientId) continue;
 
                 await supabaseAdmin
                   .from("mail_messages")
-                  .update({ client_id: matchingClient.id })
+                  .update({ client_id: clientId })
                   .eq("id", mail.id);
+
+                mail.client_id = clientId;
+                console.log(
+                  `Nullter Loop: Mail ${mail.id} Kunde ${clientId} zugeordnet (${contactEmail}, via ${via})`
+                );
               }
 
               // Zweiter Loop — body_clean per KI extrahieren
@@ -734,15 +771,8 @@ ${cleanInput.slice(0, 3000)}`;
               for (const mail of insertedMails) {
                 if (mail.in_reply_to_message_id) continue;
 
-                const { data: existingClient } = await supabaseAdmin
-                  .from("clients")
-                  .select("id")
-                  .eq("user_id", mail.user_id)
-                  .eq('email', mail.from_email)
-                  .limit(1)
-                  .maybeSingle();
-
-                if (existingClient) continue;
+                const { clientId: knownClientId } = await findClientForMail(mail);
+                if (knownClientId) continue;
 
                 const { data: existingAction } = await supabaseAdmin
                   .from("system_actions")
@@ -761,6 +791,9 @@ ${cleanInput.slice(0, 3000)}`;
 
                 let aiPayload = {
                   from_email: mail.from_email,
+                  // Adresse, an die geantwortet werden muss und unter der der Kunde
+                  // angelegt werden soll — nicht zwingend from_email.
+                  contact_email: mail.contact_email ?? mail.from_email,
                   subject: mail.subject,
                   body_preview: mail.body_preview,
                   received_at: mail.received_at,
@@ -867,12 +900,32 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                       .update(patch)
                       .eq("id", mail.id);
 
+                    if (patch.contact_email) mail.contact_email = patch.contact_email;
+
                     console.log(
                       `Forwarder erkannt: Absender ${mail.from_email}, Kundenadresse im Text ${bodyEmail}, contact_email ${patch.contact_email ? `auf ${bodyEmail} gesetzt` : `bleibt Reply-To ${mail.reply_to_email}`}`
                     );
                   }
                 } catch (e) {
                   console.error(`contact_email resolve error for mail ${mail.id}:`, e.message);
+                }
+
+                // Erst jetzt steht die Kundenadresse endgueltig fest. Ist der Kunde
+                // damit doch bekannt, gehoert die Mail zu ihm — keine neue Anfrage.
+                const { clientId: lateClientId, contactEmail: lateContact } =
+                  await findClientForMail(mail);
+
+                if (lateClientId) {
+                  await supabaseAdmin
+                    .from("mail_messages")
+                    .update({ client_id: lateClientId })
+                    .eq("id", mail.id);
+
+                  mail.client_id = lateClientId;
+                  console.log(
+                    `Dritter Loop: Kunde ${lateClientId} erst ueber ${lateContact} erkannt, keine unknown_sender action`
+                  );
+                  continue;
                 }
 
                 const confidence = aiPayload.confidence ?? 0;
@@ -908,7 +961,8 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
               // Zweiter Loop — Waiting-Actions prüfen
               for (const mail of insertedMails) {
-                if (!mail.from_email) continue;
+                const { clientId: mailClientId } = await findClientForMail(mail);
+                if (!mailClientId) continue;
 
                 const { data: waitingActions } = await supabaseAdmin
                   .from("job_actions")
@@ -924,6 +978,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                 for (const action of filtered) {
                   if (!action.client_id) continue;
+                  if (action.client_id !== mailClientId) continue;
 
                   const { data: clientData } = await supabaseAdmin
                     .from("clients")
@@ -931,8 +986,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                     .eq("id", action.client_id)
                     .single();
 
-                  if (!clientData?.email) continue;
-                  if (clientData.email.toLowerCase() !== mail.from_email.toLowerCase()) continue;
+                  if (!clientData) continue;
 
                   const clientName = clientData.first_name
                     ? `${clientData.first_name}${clientData.name ? ' ' + clientData.name : ''}`
@@ -1001,18 +1055,18 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
               // Vierter Loop — Bekannte Kunden ohne wait_for_reply
               console.log(`Vierter Loop: checking ${insertedMails.length} mails for known clients`);
               for (const mail of insertedMails) {
-                console.log(`Vierter Loop: checking mail from ${mail.from_email}`);
-                if (!mail.from_email) continue;
+                console.log(`Vierter Loop: checking mail from ${mail.from_email} (contact ${mail.contact_email})`);
 
-                const { data: matchedClients } = await supabaseAdmin
+                const { clientId: matchedClientId } = await findClientForMail(mail);
+                if (!matchedClientId) continue;
+
+                const { data: matchedClient } = await supabaseAdmin
                   .from('clients')
                   .select('id, email, first_name, name')
-                  .eq('user_id', mail.user_id)
-                  .ilike('email', mail.from_email);
+                  .eq('id', matchedClientId)
+                  .maybeSingle();
 
-                if (!matchedClients?.length) continue;
-
-                const matchedClient = matchedClients[0];
+                if (!matchedClient) continue;
                 const clientName4 = matchedClient.first_name
                   ? `${matchedClient.first_name}${matchedClient.name ? ' ' + matchedClient.name : ''}`
                   : matchedClient.email;
@@ -1557,7 +1611,7 @@ app.post("/retry-ai-analysis", async (req, res) => {
     for (const action of pendingActions) {
       const { data: mail } = await supabaseAdmin
         .from("mail_messages")
-        .select("body_text, subject, from_email, body_preview, received_at")
+        .select("body_text, subject, from_email, contact_email, body_preview, received_at")
         .eq("id", action.mail_message_id)
         .single();
 
@@ -1657,6 +1711,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
       const aiPayload = {
         from_email: mail.from_email,
+        contact_email: mail.contact_email ?? mail.from_email,
         subject: mail.subject,
         body_preview: mail.body_preview,
         received_at: mail.received_at,
