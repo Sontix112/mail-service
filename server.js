@@ -53,6 +53,59 @@ function normalizeEmail(addr) {
   return v.includes("@") ? v : null;
 }
 
+// Textfelder, die im action payload IMMER vorhanden sein muessen.
+// Fehlt ein Feld, rendert FlutterFlow den JSON-Pfad als "null" und der Text
+// landet so in Kundendaten und KI-Mails ("Alexander null").
+const ACTION_TEXT_FIELDS = [
+  "first_name",
+  "last_name",
+  "email",
+  "phone",
+  "job_event_type",
+  "event_title",
+  "event_date",
+  "location",
+  "source",
+  "message",
+  "subject",
+  "body_preview",
+  "open_topics",
+  "suggestion_purpose",
+  "offer_response_summary",
+];
+
+// Macht aus fehlenden und unbrauchbaren Werten leere Strings.
+// Leer ist in FlutterFlow harmlos: Felder bleiben leer statt "null" anzuzeigen,
+// und Sichtbarkeitspruefungen auf "nicht leer" greifen weiterhin.
+function normalizeActionPayload(payload) {
+  const out = { ...(payload ?? {}) };
+
+  for (const field of ACTION_TEXT_FIELDS) {
+    const value = out[field];
+
+    if (value === null || value === undefined) {
+      out[field] = "";
+      continue;
+    }
+
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      out[field] = ["null", "undefined", "none", "n/a"].includes(trimmed.toLowerCase())
+        ? ""
+        : trimmed;
+    }
+  }
+
+  // Restliche Felder: als String geschriebenes "null" ebenfalls leeren.
+  for (const [key, value] of Object.entries(out)) {
+    if (typeof value === "string" && value.trim().toLowerCase() === "null") {
+      out[key] = "";
+    }
+  }
+
+  return out;
+}
+
 // Ermittelt den Kunden zu einer eingehenden Mail.
 // Basis ist contact_email, nicht from_email: bei Kontaktformularen ist from_email
 // die Adresse des Formular-Systems, nicht die des Kunden.
@@ -954,7 +1007,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                     action_type: "unknown_sender",
                     status,
                     page_key: "unknown_sender",
-                    payload: aiPayload,
+                    payload: normalizeActionPayload(aiPayload),
                     mail_message_id: mail.id,
                   });
               }
@@ -1723,7 +1776,7 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
         .update({
           status: newStatus,
           title,
-          payload: aiPayload,
+          payload: normalizeActionPayload(aiPayload),
         })
         .eq("id", action.id);
 
@@ -2130,7 +2183,7 @@ app.post("/link-mail-to-job", async (req, res) => {
     }
 
     // System action updaten mit client_id, job_id und payload
-    const updatedPayload = {
+    const updatedPayload = normalizeActionPayload({
       ...(existingAction.payload ?? {}),
       client_id,
       job_id: job_id ?? null,
@@ -2140,7 +2193,7 @@ app.post("/link-mail-to-job", async (req, res) => {
       detected_dates: detectedDates,
       suggestion_purpose: suggestionPurpose,
       offer_response_summary: offerResponseSummary,
-    };
+    });
 
     const { error: updateErr } = await supabaseAdmin
       .from("system_actions")
