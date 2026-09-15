@@ -2,6 +2,7 @@ import express from "express";
 import { supabaseAdmin, supabaseAsUser } from "../lib/supabase.js";
 import { normalizeEmail, clientIp } from "../lib/util.js";
 import { newToken, hashToken, newCode, hashesMatch } from "../lib/crypto.js";
+import { createHash } from "node:crypto";
 import { sendMailAsUser } from "../lib/mailer.js";
 
 export const portalRouter = express.Router();
@@ -691,6 +692,408 @@ portalRouter.get("/portal/contract/:id", requirePortalSession, async (req, res) 
         status: text(s.status),
         unterschrieben_am: text(s.signed_at),
       })),
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Etappe 5: Unterschrift
+//
+// Der entscheidende Vorgang im ganzen Portal. Alles, was hier passiert, muss
+// spaeter nachvollziehbar sein — deshalb wird nicht nur ein Status gesetzt,
+// sondern der Vertragstext im Moment der Unterschrift eingefroren und gehasht.
+//
+// Reihenfolge ist nicht beliebig: signed_at, frozen_html und content_hash
+// gehen in EINEM Update raus. Wird signed_at zuerst gesetzt, sperrt der
+// Datenbank-Trigger den Vertrag und die Nachtraege schlagen fehl.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const MAX_SIGNATURE_BYTES = 2 * 1024 * 1024;
+
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Baut aus den Bloecken den Vertragstext — einmal als HTML zum Einfrieren,
+// einmal als Klartext fuer die Bestaetigungsmail.
+function renderContractText(contract, blocks, items) {
+  const byParent = new Map();
+  for (const b of blocks) {
+    const key = b.parent_id ?? "root";
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(b);
+  }
+  for (const list of byParent.values()) {
+    list.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  }
+
+  const html = [];
+  const plain = [];
+
+  html.push(`<h1>${escapeHtml(contract.title_page_heading || contract.name || "Vertrag")}</h1>`);
+  plain.push(String(contract.title_page_heading || contract.name || "Vertrag").toUpperCase());
+  plain.push("");
+
+  function walk(parentKey, depth) {
+    for (const block of byParent.get(parentKey) ?? []) {
+      const nummer = block.display_number ? `${block.display_number}. ` : "";
+      const inhalt = String(block.content ?? "").trim();
+
+      if (block.level === "title") {
+        html.push(`<h2>${escapeHtml(nummer + inhalt)}</h2>`);
+        plain.push("");
+        plain.push(nummer + inhalt);
+      } else {
+        html.push(`<p>${escapeHtml(inhalt).replace(/\n/g, "<br>")}</p>`);
+        plain.push(inhalt);
+        plain.push("");
+      }
+
+      walk(block.id, depth + 1);
+    }
+  }
+
+  walk("root", 0);
+
+  if (items.length) {
+    html.push("<h2>Leistungen</h2>");
+    plain.push("");
+    plain.push("LEISTUNGEN");
+    html.push("<ul>");
+    for (const i of items) {
+      const menge = i.quantity ? `${i.quantity} x ` : "";
+      const zeile = `${menge}${i.title ?? ""} — ${money(i.price).toFixed(2)} EUR`;
+      html.push(`<li>${escapeHtml(zeile)}</li>`);
+      plain.push("- " + zeile);
+    }
+    html.push("</ul>");
+  }
+
+  const summe = `Gesamtbetrag brutto: ${money(contract.total_gross).toFixed(2)} EUR`;
+  html.push(`<p><strong>${escapeHtml(summe)}</strong></p>`);
+  plain.push("");
+  plain.push(summe);
+
+  return { html: html.join("\n"), plain: plain.join("\n") };
+}
+
+async function loadSignableContract(access, contractId) {
+  const { data: contract } = await supabaseAdmin
+    .from("contracts")
+    .select("*")
+    .eq("id", contractId)
+    .maybeSingle();
+
+  if (!contract || contract.job_id !== access.job_id || !contract.sent_at) {
+    return { error: "not_found", status: 404 };
+  }
+  if (contract.signed_at) {
+    return { error: "already_signed", status: 409 };
+  }
+  return { contract };
+}
+
+// ── Bestätigungscode für die Unterschrift anfordern ──────────────────────────
+portalRouter.post("/portal/sign/request", requirePortalSession, async (req, res) => {
+  try {
+    const { access } = req.portal;
+    const contractId = req.body?.contract_id;
+
+    if (!contractId) return res.status(400).json({ error: "missing_contract_id" });
+
+    if (!rateLimit(`signreq:${access.id}`, 5, 15 * 60 * 1000)) {
+      return res.status(429).json({ error: "too_many_requests" });
+    }
+
+    const found = await loadSignableContract(access, contractId);
+    if (found.error) return res.status(found.status).json({ error: found.error });
+
+    const code = newCode();
+
+    await supabaseAdmin.from("portal_codes").insert({
+      portal_access_id: access.id,
+      code_hash: hashToken(code),
+      purpose: "sign",
+      contract_id: contractId,
+    });
+
+    await sendMailAsUser(
+      access.user_id,
+      access.email,
+      "Ihr Bestätigungscode zur Unterschrift",
+      `Hallo,
+
+Sie möchten den Vertrag „${found.contract.name ?? ""}“ unterschreiben.
+
+Ihr Bestätigungscode lautet: ${code}
+
+Der Code ist 10 Minuten gültig. Wir fragen ihn ab, damit sicher ist, dass die
+Unterschrift wirklich von Ihnen stammt und nicht von jemandem, der zufällig
+Ihren Zugangslink hat.
+
+Wenn Sie das nicht waren, unterschreiben Sie bitte nicht und melden Sie sich
+bei uns.
+
+Viele Grüße`
+    );
+
+    await logPortalEvent(access.user_id, access.id, "sign_code_requested", req, {
+      contract_id: contractId,
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// ── Unterschreiben ───────────────────────────────────────────────────────────
+portalRouter.post("/portal/sign", requirePortalSession, async (req, res) => {
+  try {
+    const { access, session } = req.portal;
+    const {
+      contract_id: contractId,
+      code,
+      typed_name: typedName,
+      signature_base64: signatureBase64,
+    } = req.body || {};
+
+    if (!contractId || !code || !typedName) {
+      return res.status(400).json({ error: "missing_fields" });
+    }
+
+    if (!rateLimit(`sign:${access.id}`, 20, 15 * 60 * 1000)) {
+      return res.status(429).json({ error: "too_many_requests" });
+    }
+
+    const found = await loadSignableContract(access, contractId);
+    if (found.error) return res.status(found.status).json({ error: found.error });
+    const contract = found.contract;
+
+    // ── Code prüfen ──
+    const { data: entry } = await supabaseAdmin
+      .from("portal_codes")
+      .select("*")
+      .eq("portal_access_id", access.id)
+      .eq("purpose", "sign")
+      .eq("contract_id", contractId)
+      .is("used_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!entry) {
+      await logPortalEvent(access.user_id, access.id, "sign_code_failed", req, {
+        contract_id: contractId,
+        grund: "kein_gueltiger_code",
+      });
+      return res.status(401).json({ error: "invalid_code" });
+    }
+
+    if (entry.attempts >= 5) return res.status(401).json({ error: "code_locked" });
+
+    if (!hashesMatch(hashToken(String(code).trim()), entry.code_hash)) {
+      await supabaseAdmin
+        .from("portal_codes")
+        .update({ attempts: entry.attempts + 1 })
+        .eq("id", entry.id);
+
+      await logPortalEvent(access.user_id, access.id, "sign_code_failed", req, {
+        contract_id: contractId,
+      });
+      return res.status(401).json({ error: "invalid_code" });
+    }
+
+    await supabaseAdmin
+      .from("portal_codes")
+      .update({ used_at: new Date().toISOString() })
+      .eq("id", entry.id);
+
+    // ── Vertragstext einfrieren ──
+    const [{ data: blocks }, { data: items }] = await Promise.all([
+      supabaseAdmin
+        .from("contract_content_blocks")
+        .select("id, parent_id, level, position, content, display_number")
+        .eq("contract_id", contract.id),
+      supabaseAdmin
+        .from("contract_items")
+        .select("position, item_type, title, description, price, quantity")
+        .eq("contract_id", contract.id)
+        .order("position", { ascending: true }),
+    ]);
+
+    const rendered = renderContractText(contract, blocks ?? [], items ?? []);
+    const contentHash = createHash("sha256").update(rendered.html, "utf8").digest("hex");
+
+    // ── Unterschriftsbild ablegen ──
+    let signaturePath = null;
+    if (signatureBase64) {
+      const raw = String(signatureBase64).replace(/^data:image\/png;base64,/, "");
+      const bytes = Buffer.from(raw, "base64");
+
+      if (!bytes.length) return res.status(400).json({ error: "signature_unreadable" });
+      if (bytes.length > MAX_SIGNATURE_BYTES) {
+        return res.status(413).json({ error: "signature_too_large" });
+      }
+
+      // Eindeutiger Pfad, upsert aus: eine Unterschrift darf nie ueberschrieben werden.
+      signaturePath = `${access.user_id}/${contract.id}/signature-${Date.now()}-${newToken().slice(0, 8)}.png`;
+
+      const { error: upErr } = await supabaseAdmin.storage
+        .from("contracts")
+        .upload(signaturePath, bytes, { contentType: "image/png", upsert: false });
+
+      if (upErr) {
+        return res.status(500).json({ error: "signature_upload_failed", detail: upErr.message });
+      }
+    }
+
+    // ── Unterzeichner sicherstellen ──
+    let { data: signer } = await supabaseAdmin
+      .from("contract_signers")
+      .select("id")
+      .eq("contract_id", contract.id)
+      .order("sign_order", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (!signer) {
+      const { data: created } = await supabaseAdmin
+        .from("contract_signers")
+        .insert({
+          user_id: access.user_id,
+          contract_id: contract.id,
+          name: String(typedName).trim(),
+          email: access.email,
+          sign_order: 1,
+        })
+        .select("id")
+        .single();
+      signer = created;
+    }
+
+    const now = new Date().toISOString();
+
+    const { error: sigErr } = await supabaseAdmin.from("contract_signatures").insert({
+      user_id: access.user_id,
+      contract_id: contract.id,
+      signer_id: signer?.id ?? null,
+      portal_session_id: session.id,
+      typed_name: String(typedName).trim(),
+      signature_path: signaturePath,
+      content_hash: contentHash,
+      ip: clientIp(req),
+      user_agent: req.headers["user-agent"] ?? null,
+      signed_at: now,
+    });
+
+    if (sigErr) {
+      return res.status(500).json({ error: "signature_insert_failed", detail: sigErr.message });
+    }
+
+    // ── Vertrag abschliessen: EIN Update, sonst sperrt der Trigger ──
+    const { error: contractErr } = await supabaseAdmin
+      .from("contracts")
+      .update({
+        signed_at: now,
+        status: "signed",
+        frozen_html: rendered.html,
+        content_hash: contentHash,
+      })
+      .eq("id", contract.id);
+
+    if (contractErr) {
+      return res.status(500).json({ error: "contract_update_failed", detail: contractErr.message });
+    }
+
+    if (signer?.id) {
+      await supabaseAdmin
+        .from("contract_signers")
+        .update({ status: "signed", signed_at: now })
+        .eq("id", signer.id);
+    }
+
+    await supabaseAdmin.from("milestones").insert({
+      user_id: access.user_id,
+      job_id: access.job_id,
+      milestone_key: "contract_signed",
+      payload: { contract_id: contract.id, content_hash: contentHash },
+    });
+
+    // ── Bestaetigung an beide Seiten ──
+    // Die Mail ist der dauerhafte Datentraeger: sie enthaelt den vollstaendigen
+    // Vertragstext im Zustand der Unterschrift, nicht nur einen Link.
+    const protokoll = `--- Protokoll ---
+Unterschrieben am: ${new Date(now).toLocaleString("de-DE", { timeZone: "Europe/Berlin" })}
+Name: ${String(typedName).trim()}
+E-Mail: ${access.email}
+IP-Adresse: ${clientIp(req) ?? "unbekannt"}
+Geraet: ${req.headers["user-agent"] ?? "unbekannt"}
+Pruefsumme des Vertragstextes (SHA-256):
+${contentHash}`;
+
+    const mailText = `${rendered.plain}
+
+${protokoll}`;
+
+    try {
+      await sendMailAsUser(
+        access.user_id,
+        access.email,
+        `Ihr unterschriebener Vertrag: ${contract.name ?? ""}`,
+        `Hallo,
+
+vielen Dank — der Vertrag wurde soeben unterschrieben. Nachfolgend der
+vollständige Vertragstext in der Fassung, die Sie unterschrieben haben.
+Bitte bewahren Sie diese E-Mail auf.
+
+${mailText}`
+      );
+    } catch (e) {
+      console.error("Bestaetigungsmail an Kunden fehlgeschlagen:", e.message);
+    }
+
+    try {
+      const { data: account } = await supabaseAdmin
+        .from("mail_accounts")
+        .select("email")
+        .eq("user_id", access.user_id)
+        .eq("is_active", true)
+        .order("is_default", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (account?.email) {
+        await sendMailAsUser(
+          access.user_id,
+          account.email,
+          `Vertrag unterschrieben: ${contract.name ?? ""}`,
+          `${String(typedName).trim()} hat den Vertrag unterschrieben.
+
+${mailText}`
+        );
+      }
+    } catch (e) {
+      console.error("Benachrichtigung an Inhaber fehlgeschlagen:", e.message);
+    }
+
+    await logPortalEvent(access.user_id, access.id, "signed", req, {
+      contract_id: contract.id,
+      content_hash: contentHash,
+    });
+
+    return res.json({
+      ok: true,
+      contract_id: contract.id,
+      signed_at: now,
+      content_hash: contentHash,
+      signature_gespeichert: Boolean(signaturePath),
     });
   } catch (e) {
     return res.status(500).json({ error: e?.message ?? String(e) });
