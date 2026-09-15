@@ -355,7 +355,15 @@ portalRouter.post("/portal/login/verify", async (req, res) => {
       .limit(1)
       .maybeSingle();
 
-    if (!entry) return res.status(401).json({ error: "invalid_code" });
+    if (!entry) {
+      // Kein gueltiger Code vorhanden: abgelaufen, schon verbraucht oder nie
+      // angefordert. Gehoert ins Protokoll — ein Wiederverwendungsversuch ist
+      // genau das, was man dort spaeter sehen will.
+      await logPortalEvent(access.user_id, access.id, "code_failed", req, {
+        grund: "kein_gueltiger_code",
+      });
+      return res.status(401).json({ error: "invalid_code" });
+    }
 
     if (entry.attempts >= 5) {
       return res.status(401).json({ error: "code_locked" });
@@ -458,4 +466,233 @@ portalRouter.get("/portal/me", requirePortalSession, async (req, res) => {
     email: req.portal.access.email,
     expires_at: req.portal.session.expires_at,
   });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Etappe 3: Daten für den Kunden
+//
+// Diese Endpoints liefern bewusst KEINE Tabellenzeilen, sondern eine Auswahl.
+// Interne Arbeitsebene bleibt draussen: mail_messages, system_actions,
+// job_actions, Meilensteine, Notizen, interne Kalendereintraege.
+//
+// Jedes Textfeld ist immer vorhanden, fehlende Werte als leerer String —
+// sonst zeigt die Oberflaeche irgendwann den Text "null" an.
+// ═════════════════════════════════════════════════════════════════════════════
+
+function text(value) {
+  if (value === null || value === undefined) return "";
+  const s = String(value).trim();
+  return s.toLowerCase() === "null" ? "" : s;
+}
+
+function money(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
+  try {
+    const { access } = req.portal;
+
+    const [jobRes, clientRes, offersRes, contractsRes, invoicesRes, eventsRes] =
+      await Promise.all([
+        supabaseAdmin
+          .from("jobs")
+          .select("id, title, event_date, status")
+          .eq("id", access.job_id)
+          .maybeSingle(),
+
+        supabaseAdmin
+          .from("clients")
+          .select("id, first_name, name, email, phone, street, zip, city, country")
+          .eq("id", access.client_id)
+          .maybeSingle(),
+
+        // Entwuerfe bleiben draussen — ein Angebot wird sichtbar, wenn es
+        // den Entwurfsstatus verlassen hat.
+        supabaseAdmin
+          .from("offers")
+          .select("id, title, status, intro_text, closing_text, total_gross, vat_rate, created_at")
+          .eq("job_id", access.job_id)
+          .neq("status", "draft")
+          .order("created_at", { ascending: false }),
+
+        // Ein Vertrag wird sichtbar, sobald er bewusst verschickt wurde.
+        // sent_at ist die Freigabe, nicht der Status.
+        supabaseAdmin
+          .from("contracts")
+          .select("id, name, status, total_gross, sent_at, signed_at, created_at")
+          .eq("job_id", access.job_id)
+          .not("sent_at", "is", null)
+          .order("created_at", { ascending: false }),
+
+        supabaseAdmin
+          .from("invoices")
+          .select("id, invoice_number, invoice_date, due_date, total_gross, status, invoice_type")
+          .eq("job_id", access.job_id)
+          .neq("status", "draft")
+          .order("invoice_date", { ascending: false }),
+
+        // Nur bestaetigte Termine. Vorschlaege sind interner Aushandlungsstand
+        // und haben im Portal nichts verloren.
+        supabaseAdmin
+          .from("calendar_events")
+          .select("id, title, start_at, end_at, all_day, all_day_start_date, all_day_end_date, location, job_event_type")
+          .eq("job_id", access.job_id)
+          .eq("status", "confirmed")
+          .order("start_at", { ascending: true }),
+      ]);
+
+    const job = jobRes.data;
+    if (!job) return res.status(404).json({ error: "job_not_found" });
+
+    const client = clientRes.data ?? {};
+
+    await logPortalEvent(access.user_id, access.id, "overview", req);
+
+    return res.json({
+      ok: true,
+      projekt: {
+        titel: text(job.title),
+        termin: text(job.event_date),
+      },
+      kunde: {
+        vorname: text(client.first_name),
+        nachname: text(client.name),
+        email: text(access.email),
+        telefon: text(client.phone),
+        strasse: text(client.street),
+        plz: text(client.zip),
+        ort: text(client.city),
+        land: text(client.country),
+      },
+      angebote: (offersRes.data ?? []).map((o) => ({
+        id: o.id,
+        titel: text(o.title),
+        status: text(o.status),
+        summe_brutto: money(o.total_gross),
+        datum: text(o.created_at),
+      })),
+      vertraege: (contractsRes.data ?? []).map((c) => ({
+        id: c.id,
+        titel: text(c.name),
+        status: text(c.signed_at ? "signed" : c.status),
+        summe_brutto: money(c.total_gross),
+        verschickt_am: text(c.sent_at),
+        unterschrieben_am: text(c.signed_at),
+      })),
+      rechnungen: (invoicesRes.data ?? []).map((r) => ({
+        id: r.id,
+        nummer: text(r.invoice_number),
+        datum: text(r.invoice_date),
+        faellig_am: text(r.due_date),
+        summe_brutto: money(r.total_gross),
+        status: text(r.status),
+        art: text(r.invoice_type),
+      })),
+      termine: (eventsRes.data ?? []).map((e) => ({
+        id: e.id,
+        titel: text(e.title),
+        ganztaegig: Boolean(e.all_day),
+        beginn: text(e.all_day ? e.all_day_start_date : e.start_at),
+        ende: text(e.all_day ? e.all_day_end_date : e.end_at),
+        ort: text(e.location),
+        art: text(e.job_event_type),
+      })),
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+portalRouter.get("/portal/contract/:id", requirePortalSession, async (req, res) => {
+  try {
+    const { access } = req.portal;
+
+    const { data: contract } = await supabaseAdmin
+      .from("contracts")
+      .select("*")
+      .eq("id", req.params.id)
+      .maybeSingle();
+
+    // Drei Bedingungen, alle noetig: es gibt ihn, er gehoert zu genau diesem
+    // Job, und er wurde freigegeben. Die Job-Pruefung ist die wichtigste —
+    // ohne sie liesse sich mit einer fremden Vertrags-ID alles auslesen.
+    if (!contract || contract.job_id !== access.job_id || !contract.sent_at) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    const [blocksRes, itemsRes, signersRes] = await Promise.all([
+      supabaseAdmin
+        .from("contract_content_blocks")
+        .select("id, parent_id, level, position, content, content_type, display_number")
+        .eq("contract_id", contract.id)
+        .order("position", { ascending: true }),
+
+      supabaseAdmin
+        .from("contract_items")
+        .select("id, position, item_type, title, description, price, quantity, unit, is_percentage")
+        .eq("contract_id", contract.id)
+        .order("position", { ascending: true }),
+
+      supabaseAdmin
+        .from("contract_signers")
+        .select("id, name, email, sign_order, status, signed_at")
+        .eq("contract_id", contract.id)
+        .order("sign_order", { ascending: true }),
+    ]);
+
+    await logPortalEvent(access.user_id, access.id, "contract_view", req, {
+      contract_id: contract.id,
+    });
+
+    return res.json({
+      ok: true,
+      vertrag: {
+        id: contract.id,
+        titel: text(contract.name),
+        ueberschrift: text(contract.title_page_heading),
+        leistung_intro: text(contract.leistungsumfang_intro),
+        leistung_preis: text(contract.leistungsumfang_preis),
+        status: text(contract.signed_at ? "signed" : contract.status),
+        summe_brutto: money(contract.total_gross),
+        mwst_satz: money(contract.vat_rate),
+        anzahlung_brutto: money(contract.deposit_gross),
+        restbetrag_brutto: money(contract.remaining_gross),
+        verschickt_am: text(contract.sent_at),
+        unterschrieben_am: text(contract.signed_at),
+        unterschreibbar: !contract.signed_at,
+      },
+      bloecke: (blocksRes.data ?? []).map((b) => ({
+        id: b.id,
+        parent_id: b.parent_id,
+        ebene: text(b.level),
+        position: Number(b.position ?? 0),
+        nummer: b.display_number ?? null,
+        art: text(b.content_type),
+        inhalt: text(b.content),
+      })),
+      positionen: (itemsRes.data ?? []).map((i) => ({
+        id: i.id,
+        position: Number(i.position ?? 0),
+        art: text(i.item_type),
+        titel: text(i.title),
+        beschreibung: text(i.description),
+        preis: money(i.price),
+        menge: money(i.quantity),
+        einheit: text(i.unit),
+        prozentual: Boolean(i.is_percentage),
+      })),
+      unterzeichner: (signersRes.data ?? []).map((s) => ({
+        id: s.id,
+        name: text(s.name),
+        email: text(s.email),
+        reihenfolge: Number(s.sign_order ?? 1),
+        status: text(s.status),
+        unterschrieben_am: text(s.signed_at),
+      })),
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
 });
