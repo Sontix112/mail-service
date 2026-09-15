@@ -296,10 +296,16 @@ portalRouter.post("/portal/login/request", async (req, res) => {
       purpose: "login",
     });
 
+    const uhrzeit = new Date().toLocaleTimeString("de-DE", {
+      timeZone: "Europe/Berlin",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
     await sendMailAsUser(
       access.user_id,
       email,
-      "Ihr Anmeldecode",
+      `Anmeldung im Kundenbereich — Code ${code} (${uhrzeit} Uhr)`,
       `Hallo,
 
 Ihr Anmeldecode lautet: ${code}
@@ -825,7 +831,7 @@ portalRouter.post("/portal/sign/request", requirePortalSession, async (req, res)
     await sendMailAsUser(
       access.user_id,
       access.email,
-      "Ihr Bestätigungscode zur Unterschrift",
+      `Vertrag unterschreiben — Code ${code} (${new Date().toLocaleTimeString("de-DE", { timeZone: "Europe/Berlin", hour: "2-digit", minute: "2-digit" })} Uhr)`,
       `Hallo,
 
 Sie möchten den Vertrag „${found.contract.name ?? ""}“ unterschreiben.
