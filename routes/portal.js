@@ -517,7 +517,9 @@ function itemZuLeistung(item) {
 // ohnehin nicht pro Zeile gestalten.
 function leistungenAlsText(leistungen) {
   return leistungen
-    .map((l) => (l.details.length ? `${l.titel}: ${l.details.join(", ")}` : l.titel))
+    .map((l) =>
+      l.details.length ? `- ${l.titel}: ${l.details.join(", ")}` : `- ${l.titel}`
+    )
     .join("\n");
 }
 
