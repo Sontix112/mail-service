@@ -497,6 +497,39 @@ function money(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Eine Vertrags- oder Angebotsposition in die Portal-Form bringen.
+//
+// Die Beschreibung ist Freitext, den der Inhaber getippt hat — mal mit
+// "-" am Zeilenanfang, mal ohne, mal als Aufzaehlung, mal als Satz.
+// Deshalb wird jede Zeile von fuehrenden Strichen befreit und danach
+// einheitlich neu gesetzt. Sonst stehen im Portal doppelte Striche.
+function itemZuLeistung(item) {
+  const menge = Number(item?.quantity);
+  const einheit = text(item?.unit);
+  const zusatz =
+    Number.isFinite(menge) && menge > 1
+      ? ` (${menge % 1 === 0 ? menge : menge.toFixed(1).replace(".", ",")}${einheit ? " " + einheit : ""})`
+      : "";
+
+  const details = text(item?.description)
+    .split("\n")
+    .map((zeile) => zeile.replace(/^\s*[-–•*]\s*/, "").trim())
+    .filter(Boolean);
+
+  return { titel: text(item?.title) + zusatz, details };
+}
+
+// Anzeigefertiger Block fuer das Portal. Die Oberflaeche bekommt fertigen
+// Text, keine Formatierungsaufgabe — FlutterFlow kann in einem Text-Widget
+// ohnehin nicht pro Zeile gestalten.
+function leistungenAlsText(leistungen) {
+  return leistungen
+    .map((l) =>
+      [`– ${l.titel}`, ...l.details.map((d) => `   • ${d}`)].join("\n")
+    )
+    .join("\n");
+}
+
 portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
   try {
     const { access } = req.portal;
@@ -576,24 +609,24 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
     if (quelleVertrag) {
       const { data } = await supabaseAdmin
         .from("contract_items")
-        .select("title, item_type, position")
+        .select("title, description, item_type, position, quantity, unit")
         .eq("contract_id", quelleVertrag.id)
         .order("position", { ascending: true });
 
       leistungen = (data ?? [])
         .filter((i) => String(i.item_type ?? "") !== "discount")
-        .map((i) => text(i.title));
+        .map(itemZuLeistung);
     } else if (offers.length) {
       const { data } = await supabaseAdmin
         .from("offer_items")
-        .select("title, pos")
+        .select("title, description, pos, quantity")
         .eq("offer_id", offers[0].id)
         .order("pos", { ascending: true });
 
-      leistungen = (data ?? []).map((i) => text(i.title));
+      leistungen = (data ?? []).map(itemZuLeistung);
     }
 
-    leistungen = leistungen.filter(Boolean);
+    leistungen = leistungen.filter((l) => l.titel);
 
     await logPortalEvent(access.user_id, access.id, "overview", req);
 
@@ -603,7 +636,7 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
         titel: text(job.title),
         termin: text(job.event_date),
         status: projektStatus,
-        leistungsumfang: leistungen.join(", "),
+        leistungsumfang: leistungenAlsText(leistungen),
         leistungen,
       },
       kunde: {
