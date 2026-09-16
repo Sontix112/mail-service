@@ -554,6 +554,46 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
     if (!job) return res.status(404).json({ error: "job_not_found" });
 
     const client = clientRes.data ?? {};
+    const offers = offersRes.data ?? [];
+    const contracts = contractsRes.data ?? [];
+
+    // Kundensicht-Status. Der interne jobs.status ist Arbeitsstand des
+    // Inhabers ("lead", "offer_sent", ...) und hat im Portal nichts verloren.
+    const signedContract = contracts.find((c) => c.signed_at);
+    const projektStatus = signedContract
+      ? "Vertrag unterschrieben"
+      : contracts.length
+        ? "Vertrag liegt zur Unterschrift bereit"
+        : offers.length
+          ? "Angebot liegt vor"
+          : "In Vorbereitung";
+
+    // Leistungsumfang: was tatsaechlich gilt. Vertrag schlaegt Angebot,
+    // unterschriebener Vertrag schlaegt verschickten.
+    const quelleVertrag = signedContract ?? contracts[0] ?? null;
+    let leistungen = [];
+
+    if (quelleVertrag) {
+      const { data } = await supabaseAdmin
+        .from("contract_items")
+        .select("title, item_type, position")
+        .eq("contract_id", quelleVertrag.id)
+        .order("position", { ascending: true });
+
+      leistungen = (data ?? [])
+        .filter((i) => String(i.item_type ?? "") !== "discount")
+        .map((i) => text(i.title));
+    } else if (offers.length) {
+      const { data } = await supabaseAdmin
+        .from("offer_items")
+        .select("title, pos")
+        .eq("offer_id", offers[0].id)
+        .order("pos", { ascending: true });
+
+      leistungen = (data ?? []).map((i) => text(i.title));
+    }
+
+    leistungen = leistungen.filter(Boolean);
 
     await logPortalEvent(access.user_id, access.id, "overview", req);
 
@@ -562,6 +602,9 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
       projekt: {
         titel: text(job.title),
         termin: text(job.event_date),
+        status: projektStatus,
+        leistungsumfang: leistungen.join(", "),
+        leistungen,
       },
       kunde: {
         vorname: text(client.first_name),
