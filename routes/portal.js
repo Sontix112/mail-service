@@ -504,19 +504,12 @@ function money(value) {
 // Deshalb wird jede Zeile von fuehrenden Strichen befreit und danach
 // einheitlich neu gesetzt. Sonst stehen im Portal doppelte Striche.
 function itemZuLeistung(item) {
-  const menge = Number(item?.quantity);
-  const einheit = text(item?.unit);
-  const zusatz =
-    Number.isFinite(menge) && menge > 1
-      ? ` (${menge % 1 === 0 ? menge : menge.toFixed(1).replace(".", ",")}${einheit ? " " + einheit : ""})`
-      : "";
-
   const details = text(item?.description)
     .split("\n")
     .map((zeile) => zeile.replace(/^\s*[-–•*]\s*/, "").trim())
     .filter(Boolean);
 
-  return { titel: text(item?.title) + zusatz, details };
+  return { titel: text(item?.title), details };
 }
 
 // Anzeigefertiger Block fuer das Portal. Die Oberflaeche bekommt fertigen
@@ -524,9 +517,7 @@ function itemZuLeistung(item) {
 // ohnehin nicht pro Zeile gestalten.
 function leistungenAlsText(leistungen) {
   return leistungen
-    .map((l) =>
-      [`– ${l.titel}`, ...l.details.map((d) => `   • ${d}`)].join("\n")
-    )
+    .map((l) => (l.details.length ? `${l.titel}: ${l.details.join(", ")}` : l.titel))
     .join("\n");
 }
 
