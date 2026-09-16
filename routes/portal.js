@@ -497,6 +497,31 @@ function money(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Kurzes Anzeigedatum fuer die Terminliste: "11.03." bzw. "11.03., 14:00".
+//
+// Formatiert wird hier und nicht in der Oberflaeche, weil die Zeitzone sonst
+// vom Geraet des Kunden abhaengt — ein Termin um 00:30 waere je nach Handy
+// mal der 11., mal der 10. Maerz. Massgeblich ist Europe/Berlin.
+function datumKurz(value, ganztaegig) {
+  if (!value) return "";
+
+  const d = new Date(ganztaegig ? `${String(value).slice(0, 10)}T12:00:00Z` : value);
+  if (Number.isNaN(d.getTime())) return "";
+
+  const opt = { timeZone: "Europe/Berlin", day: "2-digit", month: "2-digit" };
+  const tag = new Intl.DateTimeFormat("de-DE", opt).format(d);
+
+  if (ganztaegig) return tag;
+
+  const zeit = new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+
+  return `${tag} ${zeit}`;
+}
+
 // Eine Vertrags- oder Angebotsposition in die Portal-Form bringen.
 //
 // Die Beschreibung ist Freitext, den der Inhaber getippt hat — mal mit
@@ -674,6 +699,10 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
         ende: text(e.all_day ? e.all_day_end_date : e.end_at),
         ort: text(e.location),
         art: text(e.job_event_type),
+        datum_kurz: datumKurz(
+          e.all_day ? e.all_day_start_date : e.start_at,
+          Boolean(e.all_day)
+        ),
       })),
     });
   } catch (e) {
