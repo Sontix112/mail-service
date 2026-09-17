@@ -534,7 +534,24 @@ function itemZuLeistung(item) {
     .map((zeile) => zeile.replace(/^\s*[-–•*]\s*/, "").trim())
     .filter(Boolean);
 
-  return { titel: text(item?.title), details };
+  const menge = Number(item?.quantity);
+  const einzel = money(item?.price ?? item?.unit_price_gross);
+  const summe = item?.line_total_gross != null
+    ? money(item.line_total_gross)
+    : einzel * (Number.isFinite(menge) && menge > 0 ? menge : 1);
+
+  return {
+    id: text(item?.id),
+    titel: text(item?.title),
+    details,
+    // Fertige Anzeigezeile, damit die Karte im Portal einen Textwert bekommt
+    // und die Oberflaeche nicht aus einer Liste Text bauen muss.
+    beschreibung: details.join(", "),
+    einzelpreis: einzel,
+    preis: summe,
+    menge: Number.isFinite(menge) ? menge : 1,
+    einheit: text(item?.unit),
+  };
 }
 
 // Anzeigefertiger Block fuer das Portal. Die Oberflaeche bekommt fertigen
@@ -627,7 +644,7 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
     if (quelleVertrag) {
       const { data } = await supabaseAdmin
         .from("contract_items")
-        .select("title, description, item_type, position, quantity, unit")
+        .select("id, title, description, item_type, position, quantity, unit, price")
         .eq("contract_id", quelleVertrag.id)
         .order("position", { ascending: true });
 
@@ -637,7 +654,7 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
     } else if (offers.length) {
       const { data } = await supabaseAdmin
         .from("offer_items")
-        .select("title, description, pos, quantity")
+        .select("id, title, description, pos, quantity, unit_price_gross, line_total_gross")
         .eq("offer_id", offers[0].id)
         .order("pos", { ascending: true });
 
