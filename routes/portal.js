@@ -497,6 +497,24 @@ function money(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Eingefrorenes Vertrags-HTML in Lesetext zurueckverwandeln.
+// Bewusst simpel: der Text stammt aus unserem eigenen Renderer, enthaelt also
+// nur h1/h2/p/ul/li/br und keine Skripte oder Attribute.
+function htmlZuText(html) {
+  return String(html ?? "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(h1|h2|p|li|ul)>/gi, "\n")
+    .replace(/<li>/gi, "- ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 // Kurzes Anzeigedatum fuer die Terminliste: "11.03." bzw. "11.03., 14:00".
 //
 // Formatiert wird hier und nicht in der Oberflaeche, weil die Zeitzone sonst
@@ -768,10 +786,20 @@ portalRouter.get("/portal/contract/:id", requirePortalSession, async (req, res) 
       contract_id: contract.id,
     });
 
+    // Anzeigetext. Bei einem unterschriebenen Vertrag ist frozen_html der
+    // verbindliche Stand — dann zeigt das Portal genau den, nicht den aus den
+    // aktuellen Bausteinen neu gebauten. Sonst waere der angezeigte Text ein
+    // anderer als der unterschriebene, sobald jemand einen Baustein aendert.
+    const vertragstext = contract.frozen_html
+      ? htmlZuText(contract.frozen_html)
+      : renderContractText(contract, blocksRes.data ?? [], itemsRes.data ?? []).plain;
+
     return res.json({
       ok: true,
       vertrag: {
         id: contract.id,
+        text: vertragstext,
+        pruefsumme: text(contract.content_hash),
         titel: text(contract.name),
         ueberschrift: text(contract.title_page_heading),
         leistung_intro: text(contract.leistungsumfang_intro),
