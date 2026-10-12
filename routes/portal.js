@@ -164,11 +164,14 @@ portalRouter.post("/portal/invite", async (req, res) => {
     }
 
     if (wiederverwenden) {
+      // Nur ein bereits ausgelieferter Zugang ist schuetzenswert. Einer, der
+      // noch nie verschickt wurde, darf ersetzt werden - den kennt niemand.
       const { data: bestehend } = await supabaseAdmin
         .from("portal_access")
         .select("id, expires_at")
         .eq("job_id", job.id)
         .is("revoked_at", null)
+        .not("delivered_at", "is", null)
         .gt("expires_at", new Date().toISOString())
         .order("created_at", { ascending: false })
         .limit(1)
@@ -233,6 +236,13 @@ Der Link ist persönlich — bitte geben Sie ihn nicht weiter.
 
 Viele Grüße`
       );
+
+      // Ab jetzt ist der Link beim Kunden. Er darf nicht mehr stillschweigend
+      // durch einen neuen ersetzt werden.
+      await supabaseAdmin
+        .from("portal_access")
+        .update({ delivered_at: new Date().toISOString() })
+        .eq("id", access.id);
     }
 
     await logPortalEvent(userId, access.id, "invited", req, {

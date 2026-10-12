@@ -1490,7 +1490,7 @@ app.post("/delete-mail-account", async (req, res) => {
 });
 app.post("/send-mail", async (req, res) => {
   try {
-    const { jwt, mail_account_id, to, subject, body } = req.body || {};
+    const { jwt, mail_account_id, to, subject, body, job_id } = req.body || {};
 
     if (!jwt || !mail_account_id || !to || !subject || !body) {
       return res.status(400).json({
@@ -1553,6 +1553,45 @@ app.post("/send-mail", async (req, res) => {
       },
     });
 
+    // ── Festgesetzte Rechnung anhaengen ──────────────────────────────────
+    // Entscheidend ist der Datenbestand, nicht was die App behauptet: nur
+    // eine Rechnung, die wirklich festgesetzt ist und ein PDF hat, geht mit.
+    // Die Datei wird ueber die job_id gesucht, nie ueber einen vom Client
+    // gelieferten Pfad - sonst liesse sich beliebiges aus dem Storage holen.
+    const attachments = [];
+
+    if (job_id) {
+      const { data: rechnung } = await supabaseAdmin
+        .from("invoices")
+        .select("id, invoice_number, pdf_path, status, user_id")
+        .eq("job_id", job_id)
+        .eq("user_id", userId)
+        .neq("status", "draft")
+        .not("pdf_path", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (rechnung?.pdf_path) {
+        const { data: datei, error: dlErr } = await supabaseAdmin.storage
+          .from("invoices")
+          .download(rechnung.pdf_path);
+
+        if (!dlErr && datei) {
+          const bytes = Buffer.from(await datei.arrayBuffer());
+          const name = rechnung.invoice_number
+            ? `Rechnung_${String(rechnung.invoice_number).replace(/[^A-Za-z0-9._-]+/g, "_")}.pdf`
+            : "Rechnung.pdf";
+
+          attachments.push({
+            filename: name,
+            content: bytes,
+            contentType: "application/pdf",
+          });
+        }
+      }
+    }
+
     const info = await transporter.sendMail({
       from: account.email
         ? `${account.display_name || ""} <${account.email}>`
@@ -1560,11 +1599,13 @@ app.post("/send-mail", async (req, res) => {
       to,
       subject,
       text: body,
+      ...(attachments.length ? { attachments } : {}),
     });
 
     return res.json({
       ok: true,
       messageId: info.messageId,
+      attached: attachments.map((a) => a.filename),
     });
   } catch (e) {
     return res.status(500).json({
