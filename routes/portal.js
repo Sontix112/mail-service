@@ -112,10 +112,15 @@ async function requirePortalSession(req, res, next) {
 // ── Zugang anlegen (Inhaber) ─────────────────────────────────────────────────
 portalRouter.post("/portal/invite", async (req, res) => {
   try {
-    const { jwt, job_id } = req.body || {};
+    const { jwt, job_id, send_mail } = req.body || {};
     if (!jwt || !job_id) {
       return res.status(400).json({ error: "Missing required fields: jwt, job_id" });
     }
+
+    // Standardmaessig verschickt der Endpunkt die Einladung selbst. Wird der
+    // Link dagegen in eine Mail eingebaut, die der Nutzer vorher noch prueft,
+    // soll hier nichts rausgehen - dann liefert die Antwort nur den Link.
+    const mailVerschicken = send_mail !== false;
 
     const supabaseUser = supabaseAsUser(jwt);
 
@@ -180,11 +185,12 @@ portalRouter.post("/portal/invite", async (req, res) => {
 
     const link = `${PORTAL_BASE_URL}/p/${token}`;
 
-    await sendMailAsUser(
-      userId,
-      email,
-      `Ihr persönlicher Bereich zu „${job.title ?? "Ihrem Projekt"}“`,
-      `Hallo,
+    if (mailVerschicken) {
+      await sendMailAsUser(
+        userId,
+        email,
+        `Ihr persönlicher Bereich zu „${job.title ?? "Ihrem Projekt"}“`,
+        `Hallo,
 
 unter folgendem Link finden Sie alle Informationen zu Ihrem Projekt:
 
@@ -194,9 +200,13 @@ Dort sehen Sie den aktuellen Stand, Ihren Vertrag und Ihre Rechnungen.
 Der Link ist persönlich — bitte geben Sie ihn nicht weiter.
 
 Viele Grüße`
-    );
+      );
+    }
 
-    await logPortalEvent(userId, access.id, "invited", req, { job_id: job.id });
+    await logPortalEvent(userId, access.id, "invited", req, {
+      job_id: job.id,
+      mail_verschickt: mailVerschicken,
+    });
 
     // Der Klartext-Token wird hier einmalig zurückgegeben und nirgends gespeichert.
     return res.json({
@@ -205,6 +215,7 @@ Viele Grüße`
       email,
       expires_at: access.expires_at,
       link,
+      mail_sent: mailVerschicken,
     });
   } catch (e) {
     return res.status(500).json({ error: e?.message ?? String(e) });
@@ -790,16 +801,29 @@ portalRouter.get("/portal/contract/:id", requirePortalSession, async (req, res) 
     // verbindliche Stand — dann zeigt das Portal genau den, nicht den aus den
     // aktuellen Bausteinen neu gebauten. Sonst waere der angezeigte Text ein
     // anderer als der unterschriebene, sobald jemand einen Baustein aendert.
+    const gerendert = contract.frozen_html
+      ? null
+      : renderContractText(contract, blocksRes.data ?? [], itemsRes.data ?? []);
+
     const vertragstext = contract.frozen_html
       ? htmlZuText(contract.frozen_html)
-      : renderContractText(contract, blocksRes.data ?? [], itemsRes.data ?? []).plain;
+      : gerendert.plain;
+
+    // Pruefsumme des Standes, der hier gerade ausgeliefert wird. Beim
+    // unterschriebenen Vertrag steht sie in der Zeile; davor wird sie aus dem
+    // gerenderten Text gebildet - nach derselben Regel wie beim Unterschreiben.
+    // Das Portal schickt sie dort zurueck, damit niemand eine Fassung
+    // unterschreibt, die er nie zu sehen bekommen hat.
+    const pruefsumme = contract.content_hash
+      ? contract.content_hash
+      : createHash("sha256").update(gerendert.html, "utf8").digest("hex");
 
     return res.json({
       ok: true,
       vertrag: {
         id: contract.id,
         text: vertragstext,
-        pruefsumme: text(contract.content_hash),
+        pruefsumme: pruefsumme,
         titel: text(contract.name),
         ueberschrift: text(contract.title_page_heading),
         leistung_intro: text(contract.leistungsumfang_intro),
@@ -1010,6 +1034,7 @@ portalRouter.post("/portal/sign", requirePortalSession, async (req, res) => {
       code,
       typed_name: typedName,
       signature_base64: signatureBase64,
+      expected_hash: expectedHash,
     } = req.body || {};
 
     if (!contractId || !code || !typedName) {
@@ -1059,11 +1084,6 @@ portalRouter.post("/portal/sign", requirePortalSession, async (req, res) => {
       return res.status(401).json({ error: "invalid_code" });
     }
 
-    await supabaseAdmin
-      .from("portal_codes")
-      .update({ used_at: new Date().toISOString() })
-      .eq("id", entry.id);
-
     // ── Vertragstext einfrieren ──
     const [{ data: blocks }, { data: items }] = await Promise.all([
       supabaseAdmin
@@ -1079,6 +1099,30 @@ portalRouter.post("/portal/sign", requirePortalSession, async (req, res) => {
 
     const rendered = renderContractText(contract, blocks ?? [], items ?? []);
     const contentHash = createHash("sha256").update(rendered.html, "utf8").digest("hex");
+
+    // Der Kunde unterschreibt, was auf seinem Bildschirm steht. Wurde der
+    // Vertrag geaendert, waehrend das Portal offen war, passt die mitgeschickte
+    // Pruefsumme nicht mehr - dann wird abgelehnt, statt stillschweigend eine
+    // andere Fassung zu unterschreiben. Diese Pruefung steht bewusst vor dem
+    // Entwerten des Codes: der Kunde soll nach dem Neuladen direkt weiter
+    // unterschreiben koennen, ohne einen neuen Code anzufordern.
+    if (expectedHash && String(expectedHash).trim() !== contentHash) {
+      await logPortalEvent(access.user_id, access.id, "sign_hash_mismatch", req, {
+        contract_id: contract.id,
+        erwartet: String(expectedHash).trim(),
+        tatsaechlich: contentHash,
+      });
+      return res.status(409).json({
+        error: "contract_changed",
+        message:
+          "Der Vertrag wurde zwischenzeitlich geändert. Bitte laden Sie die Seite neu und prüfen Sie den aktuellen Stand.",
+      });
+    }
+
+    await supabaseAdmin
+      .from("portal_codes")
+      .update({ used_at: new Date().toISOString() })
+      .eq("id", entry.id);
 
     // ── Unterschriftsbild ablegen ──
     let signaturePath = null;
