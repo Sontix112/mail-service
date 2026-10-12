@@ -2074,11 +2074,14 @@ ${umfang || "- siehe Vertrag"}
 Gesamtbetrag: ${eur(vertrag.total_gross)}
 Anzahlung: ${eur(rechnung.total_gross)}${faellig ? `, zahlbar bis ${faellig}` : ""}
 Restbetrag: ${eur(vertrag.remaining_gross)}
-${aenderung ? `\nDer Kunde hatte beim Zusagen noch Aenderungswuensche:\n${aenderung}\nDiese sind in Vertrag und Rechnung bereits beruecksichtigt.\n` : ""}
+${aenderung ? `\nAenderungswunsch des Kunden bei der Zusage:\n${aenderung}\nDieser ist in Vertrag und Rechnung bereits beruecksichtigt. ACHTUNG: Das ist\nKEIN Vertragsposten. Er gehoert NICHT in die Leistungsliste, sondern wird in\neinem eigenen Satz daneben bestaetigt.\n` : ""}
 SO SCHREIBST DU DIESE MAIL:
 Das ist eine Auftragsbestaetigung, keine Verhandlung mehr.
 - Bestaetige die Buchung und bedanke dich.
-- Fasse den gebuchten Umfang kurz zusammen.${aenderung ? " Greife die Aenderung auf und bestaetige, dass sie uebernommen wurde." : ""}
+- Gib den gebuchten Umfang wieder - ausschliesslich die oben gelisteten
+  Vertragsposten, Wort fuer Wort. Fuege dieser Liste nichts hinzu, auch
+  nichts aus dem Mailverkehr oder aus dem Aenderungswunsch. Was der Kunde
+  spaeter in der Hand hat, muss dem Vertrag entsprechen.${aenderung ? "\n- Bestaetige den Aenderungswunsch in einem eigenen Satz NACH der Liste, nicht\n  als Punkt darin." : ""}
 - Nenne Anzahlung und Zahlungsfrist.
 - Sage, dass die Anzahlungsrechnung dieser Mail anhaengt.
 - Sage, dass der Zugang zum persoenlichen Bereich gleich in einer separaten Mail kommt. Dort liegt der Vertrag zum Lesen und Unterschreiben bereit.
