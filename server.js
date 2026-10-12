@@ -1998,6 +1998,115 @@ app.post("/ai-compose", async (req, res) => {
       return { error: "unknown tool" };
     }
 
+    // ── Buchungsstand laden ──────────────────────────────────────────────────
+    // Die Zahlen kommen aus der Datenbank, nicht aus der App. Sonst koennte
+    // der Text Betraege nennen, die so nie festgesetzt wurden. Und erst wenn
+    // Vertrag UND festgesetzte Rechnung existieren, ist es wirklich gebucht -
+    // vorher bekommt das Modell davon nichts zu sehen und verhandelt normal
+    // weiter.
+    let bookingBlock = "";
+
+    if (activeTools.includes("booking") && job_id) {
+      const [vertragRes, rechnungRes] = await Promise.all([
+        supabaseAdmin
+          .from("contracts")
+          .select("id, total_gross, deposit_gross, remaining_gross, status")
+          .eq("job_id", job_id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabaseAdmin
+          .from("invoices")
+          .select("id, invoice_number, total_gross, due_date, status")
+          .eq("job_id", job_id)
+          .neq("status", "draft")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+
+      const vertrag = vertragRes.data;
+      const rechnung = rechnungRes.data;
+
+      if (vertrag && rechnung) {
+        const [postenRes, actionsRes] = await Promise.all([
+          supabaseAdmin
+            .from("contract_items")
+            .select("title, quantity, position")
+            .eq("contract_id", vertrag.id)
+            .order("position", { ascending: true }),
+          supabaseAdmin
+            .from("job_actions")
+            .select("payload, created_at")
+            .eq("job_id", job_id)
+            .order("created_at", { ascending: false })
+            .limit(5),
+        ]);
+
+        const umfang = (postenRes.data ?? [])
+          .map((p) => {
+            const menge = Number(p.quantity ?? 1);
+            return `- ${p.title}${menge > 1 ? ` (${menge}x)` : ""}`;
+          })
+          .join("\n");
+
+        const eur = (n) =>
+          Number(n ?? 0).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+
+        const faellig = rechnung.due_date
+          ? new Date(rechnung.due_date).toLocaleDateString("de-DE")
+          : null;
+
+        // Hat der Kunde beim Zusagen etwas geaendert, muss die Bestaetigung
+        // das aufgreifen - sonst wirkt sie, als haette niemand zugehoert.
+        const aenderung = (actionsRes.data ?? [])
+          .map((a) => (a?.payload?.offer_response_summary ?? "").toString().trim())
+          .find((s) => s.length > 0);
+
+        bookingBlock = `
+
+ZUSTAND DER BUCHUNG (aus der Datenbank - nicht ergaenzen, nicht abweichen):
+Der Auftrag ist verbindlich gebucht. Vertrag und Anzahlungsrechnung sind erstellt.
+
+Gebuchter Leistungsumfang:
+${umfang || "- siehe Vertrag"}
+
+Gesamtbetrag: ${eur(vertrag.total_gross)}
+Anzahlung: ${eur(rechnung.total_gross)}${faellig ? `, zahlbar bis ${faellig}` : ""}
+Restbetrag: ${eur(vertrag.remaining_gross)}
+${aenderung ? `\nDer Kunde hatte beim Zusagen noch Aenderungswuensche:\n${aenderung}\nDiese sind in Vertrag und Rechnung bereits beruecksichtigt.\n` : ""}
+SO SCHREIBST DU DIESE MAIL:
+Das ist eine Auftragsbestaetigung, keine Verhandlung mehr.
+- Bestaetige die Buchung und bedanke dich.
+- Fasse den gebuchten Umfang kurz zusammen.${aenderung ? " Greife die Aenderung auf und bestaetige, dass sie uebernommen wurde." : ""}
+- Nenne Anzahlung und Zahlungsfrist.
+- Sage, dass die Anzahlungsrechnung dieser Mail anhaengt.
+- Sage, dass der Zugang zum persoenlichen Bereich gleich in einer separaten Mail kommt. Dort liegt der Vertrag zum Lesen und Unterschreiben bereit.
+- Diskutiere KEINE Pakete, Preise oder Alternativen und mache KEIN neues Angebot. Diese Phase ist vorbei.
+- Nenne keine Betraege oder Leistungen, die oben nicht stehen.
+- Offene Rueckfragen aus dem Mailverkehr beantwortest du separat, nach dem Buchungsteil.
+`;
+      } else {
+        // Zugesagt, aber noch nichts festgesetzt. Ohne diesen Hinweis wuerde
+        // das Modell die Zusage uebersehen und weiter ueber Pakete reden.
+        bookingBlock = `
+
+ZUSTAND DER BUCHUNG:
+Der Kunde hat verbindlich zugesagt. Die Unterlagen sind aber noch nicht
+fertig - es gibt noch keine Rechnung und keinen Kundenzugang.
+
+SO SCHREIBST DU DIESE MAIL:
+- Bestaetige die Zusage und bedanke dich.
+- Diskutiere KEINE Pakete, Preise oder Alternativen und mache KEIN neues
+  Angebot. Der Kunde hat bereits zugesagt.
+- Erwaehne KEINE Rechnung, KEINEN Vertrag und KEINEN Kundenzugang - nichts
+  davon ist verschickt.
+- Kuendige an, dass die Unterlagen in Kuerze folgen.
+- Offene Rueckfragen aus dem Mailverkehr beantwortest du normal.
+`;
+      }
+    }
+
     // ── Agentic Loop ─────────────────────────────────────────────────────────
     const now = new Date();
     const today = now.toISOString().split("T")[0];
@@ -2012,7 +2121,7 @@ WICHTIG: Schlage NUR Termine vor die in der Zukunft liegen. Der früheste mögli
 Wochentag-Kodierung in den Bürozeiten: 1=Montag, 2=Dienstag, 3=Mittwoch, 4=Donnerstag, 5=Freitag, 6=Samstag, 7=Sonntag.
 
 Aufgabe: ${task || "Schreibe eine freundliche, professionelle E-Mail-Antwort auf Deutsch."}
-
+${bookingBlock}
 ${mail_history ? `Bisheriger Mailverkehr:\n${mail_history}` : ""}
 
 Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am Ende NUR das Ergebnis zurück, ohne Erklärungen, ohne Einleitung, ohne Markdown-Formatierung.`,
