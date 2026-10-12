@@ -112,10 +112,15 @@ async function requirePortalSession(req, res, next) {
 // ── Zugang anlegen (Inhaber) ─────────────────────────────────────────────────
 portalRouter.post("/portal/invite", async (req, res) => {
   try {
-    const { jwt, job_id, send_mail } = req.body || {};
+    const { jwt, job_id, send_mail, reuse } = req.body || {};
     if (!jwt || !job_id) {
       return res.status(400).json({ error: "Missing required fields: jwt, job_id" });
     }
+
+    // Mit reuse wird ein bestehender gueltiger Zugang nicht angetastet.
+    // Das ist fuer wiederholbare Ablaeufe gedacht: ein zweiter Durchlauf
+    // soll den Link nicht entwerten, den der Kunde laengst bekommen hat.
+    const wiederverwenden = reuse === true;
 
     // Standardmaessig verschickt der Endpunkt die Einladung selbst. Wird der
     // Link dagegen in eine Mail eingebaut, die der Nutzer vorher noch prueft,
@@ -156,6 +161,33 @@ portalRouter.post("/portal/invite", async (req, res) => {
     const email = normalizeEmail(primary?.email);
     if (!email) {
       return res.status(400).json({ error: "client_without_email" });
+    }
+
+    if (wiederverwenden) {
+      const { data: bestehend } = await supabaseAdmin
+        .from("portal_access")
+        .select("id, expires_at")
+        .eq("job_id", job.id)
+        .is("revoked_at", null)
+        .gt("expires_at", new Date().toISOString())
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (bestehend) {
+        // Der Klartext-Token existiert nur einmal, bei der Ausgabe. Ein
+        // bestehender Zugang laesst sich deshalb bestaetigen, aber sein
+        // Link nicht erneut ausgeben - dafuer muesste ein neuer her.
+        return res.json({
+          ok: true,
+          existing: true,
+          portal_access_id: bestehend.id,
+          email,
+          expires_at: bestehend.expires_at,
+          link: null,
+          mail_sent: false,
+        });
+      }
     }
 
     // Vorhandene Zugänge zu diesem Job zurückziehen — es gibt immer nur einen gültigen Link
