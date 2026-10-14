@@ -1814,7 +1814,7 @@ app.post("/ai-compose", async (req, res) => {
       {
         name: "get_calendar_events",
         onlyFor: ["availability"],
-        description: "Gibt Kalender-Termine des Nutzers zurück die Verfügbarkeit blockieren. Nutze from/to im ISO-Format (YYYY-MM-DD).",
+        description: "Gibt Kalender-Termine des Nutzers zurück die Verfügbarkeit blockieren. Nutze from/to im ISO-Format (YYYY-MM-DD). Einträge mit dem Feld 'availability' sind die verbindliche Auskunft des Systems für diesen Tag ('available', 'unavailable' oder 'uncertain') — übernimm sie unverändert und ziehe für diesen Tag keine anderen Termine zur Beurteilung heran.",
         input_schema: {
           type: "object",
           properties: {
@@ -1953,10 +1953,48 @@ app.post("/ai-compose", async (req, res) => {
       }
 
       if (name === "get_calendar_events") {
+        // Die angefragten Termine der aktuellen Mail tragen bereits ein
+        // Pruefergebnis: auto_availability_status (aus check_calendar_availability_v2),
+        // optional ueberschrieben durch manual_decision. Fuer diese Tage ist das
+        // verbindlich — die Rohdaten des Kalenders duerfen nicht widersprechen.
+        const decidedByDay = new Map();
+        const dayKey = (iso) =>
+          new Date(iso).toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
+
+        if (job_id) {
+          const { data: requested } = await supabaseAdmin
+            .from("calendar_events")
+            .select("mail_message_id, manual_decision, auto_availability_status, all_day_start_date, start_at, created_at")
+            .eq("job_id", job_id)
+            .not("mail_message_id", "is", null)
+            .order("created_at", { ascending: false });
+
+          // Nur die Termine der juengsten Mail dieses Jobs — aeltere
+          // Entscheidungen sind verbraucht und duerfen nicht nachwirken.
+          const newestMailId = requested?.[0]?.mail_message_id ?? null;
+          for (const ev of requested ?? []) {
+            if (ev.mail_message_id !== newestMailId) continue;
+            const day = ev.all_day_start_date ?? (ev.start_at ? dayKey(ev.start_at) : null);
+            if (!day) continue;
+            const final = ev.manual_decision ?? ev.auto_availability_status;
+            if (!final) continue;
+            const availability =
+              final === "accept" || final === "free" ? "available"
+              : final === "decline" || final === "blocked" ? "unavailable"
+              : "uncertain";
+            decidedByDay.set(day, {
+              availability,
+              source: ev.manual_decision ? "manuell bestaetigt" : "automatisch geprueft",
+            });
+          }
+        }
+
+        const sel = "title, start_at, end_at, all_day, all_day_start_date, all_day_end_date, status";
+
         // Normale Termine (mit start_at)
         const { data: timed } = await supabaseAdmin
           .from("calendar_events")
-          .select("title, start_at, end_at, all_day, all_day_start_date, all_day_end_date, status")
+          .select(sel)
           .eq("user_id", user_id)
           .not("status", "in", '("declined","cancelled")')
           .gte("start_at", input.from)
@@ -1966,7 +2004,7 @@ app.post("/ai-compose", async (req, res) => {
         // Ganztägige Termine (all_day_start_date)
         const { data: allDay } = await supabaseAdmin
           .from("calendar_events")
-          .select("title, start_at, end_at, all_day, all_day_start_date, all_day_end_date, status")
+          .select(sel)
           .eq("user_id", user_id)
           .eq("all_day", true)
           .not("status", "in", '("declined","cancelled")')
@@ -1974,7 +2012,22 @@ app.post("/ai-compose", async (req, res) => {
           .lte("all_day_start_date", input.to)
           .order("all_day_start_date");
 
-        return [...(timed ?? []), ...(allDay ?? [])];
+        // Fuer entschiedene Tage die Rohtermine weglassen und durch die
+        // verbindliche Auskunft ersetzen.
+        const raw = [...(timed ?? []), ...(allDay ?? [])].filter((ev) => {
+          const day = ev.all_day_start_date ?? (ev.start_at ? dayKey(ev.start_at) : null);
+          return !(day && decidedByDay.has(day));
+        });
+
+        const decided = [...decidedByDay.entries()]
+          .filter(([day]) => day >= input.from && day <= input.to)
+          .map(([day, d]) => ({
+            date: day,
+            availability: d.availability,
+            note: `Verbindliche Auskunft des Systems (${d.source}). Termine an diesem Tag sind fuer diese Antwort unerheblich.`,
+          }));
+
+        return [...decided, ...raw];
       }
 
       if (name === "get_client_info") {
