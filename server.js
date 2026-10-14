@@ -369,6 +369,23 @@ app.post("/list-mails", async (req, res) => {
     });
   }
 });
+// ── Meilenstein-Helfer ───────────────────────────────────────────────────────
+// Setzt einen Meilenstein idempotent. Der Unique-Constraint auf
+// (job_id, milestone_key) sorgt dafuer, dass ein Meilenstein pro Job genau
+// einmal existiert — wiederholte Aufrufe tun nichts.
+// Fehler werden nur geloggt: ein fehlender Meilenstein darf niemals den
+// Mailfluss stoppen.
+async function setMilestone(userId, jobId, milestoneKey) {
+  if (!userId || !jobId || !milestoneKey) return;
+  const { error } = await supabaseAdmin
+    .from("milestones")
+    .upsert(
+      { user_id: userId, job_id: jobId, milestone_key: milestoneKey },
+      { onConflict: "job_id,milestone_key", ignoreDuplicates: true }
+    );
+  if (error) console.error(`milestone ${milestoneKey} failed:`, error.message);
+}
+
 // ── Shared Tool-Detection Helper ─────────────────────────────────────────────
 function toBerlinDateTime(startAt) {
   const d = new Date(startAt);
@@ -1031,6 +1048,12 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                       },
                     });
 
+                  // "booking" ist die verbindliche Zusage des Kunden (die
+                  // Erkennung sortiert offer_response dann bewusst aus).
+                  if (detectedTools.includes("booking")) {
+                    await setMilestone(mail.user_id, action.job_id, "booking_accepted");
+                  }
+
                   console.log(`wait_for_reply ${action.id} completed, answer_reply created for ${clientName}, detected_tools: ${JSON.stringify(detectedTools)}`);
                 }
               }
@@ -1127,6 +1150,10 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                       offer_response_summary: toolResult.offerResponseSummary,
                     },
                   });
+
+                if (toolResult.detectedTools.includes("booking")) {
+                  await setMilestone(mail.user_id, jobId4, "booking_accepted");
+                }
 
                 console.log(`Known client ${clientName4}: answer_reply created, tools: ${JSON.stringify(toolResult.detectedTools)}, dates: ${JSON.stringify(toolResult.detectedDates)}`);
               }
@@ -1603,19 +1630,7 @@ app.post("/send-mail", async (req, res) => {
     });
 
     // Meilenstein "Anfrage beantwortet": die erste ausgehende Mail zu einem Job.
-    // Der Unique-Constraint auf (job_id, milestone_key) macht das idempotent —
-    // spaetere Mails im selben Job laufen ins Leere statt zu doppeln.
-    // Fehler werden nur geloggt: die Mail ist raus, das darf nicht als
-    // Sendefehler zurueckkommen.
-    if (job_id) {
-      const { error: msErr } = await supabaseAdmin
-        .from("milestones")
-        .upsert(
-          { user_id: userId, job_id, milestone_key: "inquiry_reply" },
-          { onConflict: "job_id,milestone_key", ignoreDuplicates: true }
-        );
-      if (msErr) console.error("milestone inquiry_reply failed:", msErr.message);
-    }
+    await setMilestone(userId, job_id, "inquiry_reply");
 
     return res.json({
       ok: true,
@@ -2358,6 +2373,10 @@ app.post("/link-mail-to-job", async (req, res) => {
 
     if (updateErr) {
       return res.status(500).json({ error: updateErr.message });
+    }
+
+    if (detectedTools.includes("booking")) {
+      await setMilestone(userData.user.id, job_id, "booking_accepted");
     }
 
     // Mail message mit client_id und job_id verknüpfen
