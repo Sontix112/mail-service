@@ -1602,6 +1602,21 @@ app.post("/send-mail", async (req, res) => {
       ...(attachments.length ? { attachments } : {}),
     });
 
+    // Meilenstein "Anfrage beantwortet": die erste ausgehende Mail zu einem Job.
+    // Der Unique-Constraint auf (job_id, milestone_key) macht das idempotent —
+    // spaetere Mails im selben Job laufen ins Leere statt zu doppeln.
+    // Fehler werden nur geloggt: die Mail ist raus, das darf nicht als
+    // Sendefehler zurueckkommen.
+    if (job_id) {
+      const { error: msErr } = await supabaseAdmin
+        .from("milestones")
+        .upsert(
+          { user_id: userId, job_id, milestone_key: "inquiry_reply" },
+          { onConflict: "job_id,milestone_key", ignoreDuplicates: true }
+        );
+      if (msErr) console.error("milestone inquiry_reply failed:", msErr.message);
+    }
+
     return res.json({
       ok: true,
       messageId: info.messageId,
