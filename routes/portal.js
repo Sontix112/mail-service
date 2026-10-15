@@ -7,6 +7,50 @@ import { sendMailAsUser } from "../lib/mailer.js";
 
 export const portalRouter = express.Router();
 
+// ── Lesbare Meldungen fuer die Portal-Oberflaeche ────────────────────────────
+// Jede Portal-Antwort bekommt ein Feld "meldung": bei Erfolg ein leerer Text,
+// bei Fehlern ein deutscher Satz fuer den Kunden. Die Oberflaeche zeigt nur
+// dieses Feld an - nie den technischen Fehlercode und nie ein fehlendes Feld,
+// das FlutterFlow sonst als Text "null" darstellt.
+const MELDUNGEN = {
+  invalid_code: "Der Code ist nicht korrekt oder abgelaufen. Bitte prüfen Sie ihn oder fordern Sie einen neuen an.",
+  code_locked: "Zu viele Fehlversuche. Bitte fordern Sie einen neuen Code an.",
+  too_many_requests: "Zu viele Versuche in kurzer Zeit. Bitte warten Sie ein paar Minuten.",
+  missing_fields: "Bitte geben Sie Ihren vollständigen Namen und den Code ein.",
+  missing_contract_id: "Der Vertrag konnte nicht zugeordnet werden. Bitte laden Sie die Seite neu.",
+  already_signed: "Dieser Vertrag ist bereits unterschrieben.",
+  not_found: "Dieser Vertrag ist nicht (mehr) verfügbar.",
+  no_session: "Ihre Sitzung ist abgelaufen. Bitte öffnen Sie den Link aus Ihrer E-Mail erneut.",
+  missing_token: "Ihre Sitzung ist abgelaufen. Bitte öffnen Sie den Link aus Ihrer E-Mail erneut.",
+  session_expired: "Ihre Sitzung ist abgelaufen. Bitte öffnen Sie den Link aus Ihrer E-Mail erneut.",
+  invalid_or_expired: "Der Link ist nicht mehr gültig. Bitte fordern Sie einen neuen an.",
+  access_revoked: "Dieser Zugang wurde beendet. Bitte wenden Sie sich direkt an uns.",
+  signature_unreadable: "Die Unterschrift konnte nicht gelesen werden. Bitte versuchen Sie es erneut.",
+  signature_too_large: "Die Unterschrift ist zu groß. Bitte versuchen Sie es erneut.",
+};
+const MELDUNG_ALLGEMEIN =
+  "Da ist leider etwas schiefgegangen. Bitte versuchen Sie es später erneut oder melden Sie sich bei uns.";
+
+portalRouter.use("/portal", (req, res, next) => {
+  // Pfad hier festhalten: innerhalb der Route ist req.path ein anderer.
+  const istUnterschrift = req.originalUrl.split("?")[0] === "/portal/sign";
+  const json = res.json.bind(res);
+  res.json = (body) => {
+    if (body && typeof body === "object" && !Array.isArray(body) && !("meldung" in body)) {
+      const meldung = body.error
+        ? body.message || MELDUNGEN[body.error] || MELDUNG_ALLGEMEIN
+        : "";
+      body = { ...body, meldung };
+      // Beim Unterschreiben liest die Seite signed_at. Fehlt es im
+      // Fehlerfall, macht FlutterFlow daraus den Text "null" und haelt den
+      // Vertrag fuer unterschrieben - deshalb immer mitliefern.
+      if (istUnterschrift && !("signed_at" in body)) body.signed_at = "";
+    }
+    return json(body);
+  };
+  next();
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // KUNDENPORTAL — Etappe 2: Zugangskette
 //
@@ -594,18 +638,17 @@ function htmlZuAbschnitten(html) {
       : /<strong>/i.test(inhalt) ? "summe"
       : "absatz";
 
-    // Zusaetzlich ein eigenes Feld pro Art, nur bei der passenden Art befuellt.
-    // FlutterFlow kann eine Sichtbarkeit zuverlaessig an "Feld ist nicht leer"
-    // knuepfen, ein Vergleich JSON-Wert == Text dagegen wird dort als
-    // ungueltige Bedingung abgelehnt.
+    // Zusaetzlich ein eigenes Feld pro Art, nur bei der passenden Art befuellt,
+    // sonst null. FlutterFlow knuepft die Sichtbarkeit an "Feld existiert";
+    // ein leerer Text gilt bei JSON-Werten dort als vorhanden, null nicht.
     abschnitte.push({
       art,
       text,
-      titel: art === "titel" ? text : "",
-      ueberschrift: art === "ueberschrift" ? text : "",
-      absatz: art === "absatz" ? text : "",
-      posten: art === "posten" ? text : "",
-      summe: art === "summe" ? text : "",
+      titel: art === "titel" ? text : null,
+      ueberschrift: art === "ueberschrift" ? text : null,
+      absatz: art === "absatz" ? text : null,
+      posten: art === "posten" ? text : null,
+      summe: art === "summe" ? text : null,
     });
   }
   return abschnitte;
@@ -836,7 +879,9 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
         status_text: c.signed_at ? "Unterschrieben" : "Zur Unterschrift bereit",
         summe_brutto: money(c.total_gross),
         verschickt_am: text(c.sent_at),
-        unterschrieben_am: text(c.signed_at),
+        // null statt leerem Text: FlutterFlow wertet "" bei JSON-Werten als
+        // vorhanden und zeigte den Vertrag sonst als unterzeichnet an.
+        unterschrieben_am: c.signed_at ? text(c.signed_at) : null,
       })),
       rechnungen: (invoicesRes.data ?? []).map((r) => ({
         id: r.id,
