@@ -562,6 +562,43 @@ function adresseZeile(client) {
     .join(", ");
 }
 
+// Vertrags-HTML in Anzeige-Bausteine zerlegen: [{ art, text }].
+// art: "titel" (h1), "ueberschrift" (h2), "absatz" (p), "posten" (li),
+// "summe" (p mit <strong>). Der Renderer erzeugt nur diese Tags, daher
+// reicht ein einfacher Durchlauf ohne vollstaendigen HTML-Parser.
+function htmlZuAbschnitten(html) {
+  const entities = (t) =>
+    t
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&")
+      .trim();
+
+  const abschnitte = [];
+  const re = /<(h1|h2|p|li)>([\s\S]*?)<\/\1>/gi;
+  let m;
+  while ((m = re.exec(String(html ?? "")))) {
+    const tag = m[1].toLowerCase();
+    const inhalt = m[2];
+    const text = entities(inhalt);
+    if (!text) continue;
+
+    const art =
+      tag === "h1" ? "titel"
+      : tag === "h2" ? "ueberschrift"
+      : tag === "li" ? "posten"
+      : /<strong>/i.test(inhalt) ? "summe"
+      : "absatz";
+
+    abschnitte.push({ art, text });
+  }
+  return abschnitte;
+}
+
 // Eingefrorenes Vertrags-HTML in Lesetext zurueckverwandeln.
 // Bewusst simpel: der Text stammt aus unserem eigenen Renderer, enthaelt also
 // nur h1/h2/p/ul/li/br und keine Skripte oder Attribute.
@@ -884,6 +921,10 @@ portalRouter.get("/portal/contract/:id", requirePortalSession, async (req, res) 
       vertrag: {
         id: contract.id,
         text: vertragstext,
+        // Gegliederte Fassung fuer die Anzeige. Gebaut aus genau dem HTML,
+        // ueber das die Pruefsumme laeuft - die schoene Ansicht kann also
+        // nichts anderes zeigen als das, was unterschrieben wird.
+        abschnitte: htmlZuAbschnitten(contract.frozen_html ?? gerendert.html),
         pruefsumme: pruefsumme,
         titel: text(contract.name),
         ueberschrift: text(contract.title_page_heading),
