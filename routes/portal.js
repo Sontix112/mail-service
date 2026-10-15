@@ -766,6 +766,9 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
         id: c.id,
         titel: text(c.name),
         status: text(c.signed_at ? "signed" : c.status),
+        // Anzeigetext fuer den Kunden. Der Rohstatus ("sent", "signed") ist
+        // Systemsprache und gehoert nicht in die Oberflaeche.
+        status_text: c.signed_at ? "Unterschrieben" : "Zur Unterschrift bereit",
         summe_brutto: money(c.total_gross),
         verschickt_am: text(c.sent_at),
         unterschrieben_am: text(c.signed_at),
