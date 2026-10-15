@@ -550,6 +550,18 @@ function money(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Anschrift in einer Zeile: "Musterstr. 1, 49074 Osnabrueck".
+// Das Land nur, wenn es nicht Deutschland ist - fuer deutsche Kunden waere
+// es Rauschen.
+function adresseZeile(client) {
+  const ortTeil = [text(client?.zip), text(client?.city)].filter(Boolean).join(" ");
+  const land = text(client?.country);
+  const istDeutschland = !land || /^(de|deu|deutschland|germany)$/i.test(land);
+  return [text(client?.street), ortTeil, istDeutschland ? "" : land]
+    .filter(Boolean)
+    .join(", ");
+}
+
 // Eingefrorenes Vertrags-HTML in Lesetext zurueckverwandeln.
 // Bewusst simpel: der Text stammt aus unserem eigenen Renderer, enthaelt also
 // nur h1/h2/p/ul/li/br und keine Skripte oder Attribute.
@@ -754,6 +766,10 @@ portalRouter.get("/portal/overview", requirePortalSession, async (req, res) => {
         plz: text(client.zip),
         ort: text(client.city),
         land: text(client.country),
+        // Fertige Anzeigezeilen fuer "Deine Daten". Leere Teile fallen weg,
+        // damit nie "Musterstr. 1, , " oder ein einzelnes Komma dasteht.
+        name: [text(client.first_name), text(client.name)].filter(Boolean).join(" "),
+        adresse: adresseZeile(client),
       },
       angebote: (offersRes.data ?? []).map((o) => ({
         id: o.id,
