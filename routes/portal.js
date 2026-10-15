@@ -594,7 +594,19 @@ function htmlZuAbschnitten(html) {
       : /<strong>/i.test(inhalt) ? "summe"
       : "absatz";
 
-    abschnitte.push({ art, text });
+    // Zusaetzlich ein eigenes Feld pro Art, nur bei der passenden Art befuellt.
+    // FlutterFlow kann eine Sichtbarkeit zuverlaessig an "Feld ist nicht leer"
+    // knuepfen, ein Vergleich JSON-Wert == Text dagegen wird dort als
+    // ungueltige Bedingung abgelehnt.
+    abschnitte.push({
+      art,
+      text,
+      titel: art === "titel" ? text : "",
+      ueberschrift: art === "ueberschrift" ? text : "",
+      absatz: art === "absatz" ? text : "",
+      posten: art === "posten" ? text : "",
+      summe: art === "summe" ? text : "",
+    });
   }
   return abschnitte;
 }
