@@ -607,7 +607,7 @@ function adresseZeile(client) {
 }
 
 // Vertrags-HTML in Anzeige-Bausteine zerlegen: [{ art, text }].
-// art: "titel" (h1), "ueberschrift" (h2), "absatz" (p), "posten" (li),
+// art: "titel" (h1), "titelseite" (h3), "ueberschrift" (h2), "absatz" (p), "posten" (li),
 // "summe" (p mit <strong>). Der Renderer erzeugt nur diese Tags, daher
 // reicht ein einfacher Durchlauf ohne vollstaendigen HTML-Parser.
 function htmlZuAbschnitten(html) {
@@ -623,7 +623,7 @@ function htmlZuAbschnitten(html) {
       .trim();
 
   const abschnitte = [];
-  const re = /<(h1|h2|p|li)>([\s\S]*?)<\/\1>/gi;
+  const re = /<(h1|h2|h3|p|li)>([\s\S]*?)<\/\1>/gi;
   let m;
   while ((m = re.exec(String(html ?? "")))) {
     const tag = m[1].toLowerCase();
@@ -633,6 +633,7 @@ function htmlZuAbschnitten(html) {
 
     const art =
       tag === "h1" ? "titel"
+      : tag === "h3" ? "titelseite"
       : tag === "h2" ? "ueberschrift"
       : tag === "li" ? "posten"
       : /<strong>/i.test(inhalt) ? "summe"
@@ -645,6 +646,7 @@ function htmlZuAbschnitten(html) {
       art,
       text,
       titel: art === "titel" ? text : null,
+      titelseite: art === "titelseite" ? text : null,
       ueberschrift: art === "ueberschrift" ? text : null,
       absatz: art === "absatz" ? text : null,
       posten: art === "posten" ? text : null,
@@ -660,7 +662,7 @@ function htmlZuAbschnitten(html) {
 function htmlZuText(html) {
   return String(html ?? "")
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(h1|h2|p|li|ul)>/gi, "\n")
+    .replace(/<\/(h1|h2|h3|p|li|ul)>/gi, "\n")
     .replace(/<li>/gi, "- ")
     .replace(/<[^>]+>/g, "")
     .replace(/&lt;/g, "<")
@@ -958,7 +960,12 @@ portalRouter.get("/portal/contract/:id", requirePortalSession, async (req, res) 
     // anderer als der unterschriebene, sobald jemand einen Baustein aendert.
     const gerendert = contract.frozen_html
       ? null
-      : renderContractText(contract, blocksRes.data ?? [], itemsRes.data ?? []);
+      : renderContractText(
+          contract,
+          blocksRes.data ?? [],
+          itemsRes.data ?? [],
+          await ladeParteien(contract)
+        );
 
     const vertragstext = contract.frozen_html
       ? htmlZuText(contract.frozen_html)
@@ -1053,7 +1060,33 @@ function escapeHtml(s) {
 
 // Baut aus den Bloecken den Vertragstext — einmal als HTML zum Einfrieren,
 // einmal als Klartext fuer die Bestaetigungsmail.
-function renderContractText(contract, blocks, items) {
+// Vertragsparteien fuer die Titelseite laden: Kunde aus dem Vertrag,
+// Auftragnehmer aus den Einstellungen des Inhabers. Dieselbe Quelle wie die
+// Titelseite im Vertragseditor der App.
+async function ladeParteien(contract) {
+  const [kundeRes, ichRes] = await Promise.all([
+    contract.client_id
+      ? supabaseAdmin
+          .from("clients")
+          .select("first_name, name, street, zip, city")
+          .eq("id", contract.client_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabaseAdmin
+      .from("user_settings")
+      .select("first_name, last_name, street, street_number, zip, city")
+      .eq("user_id", contract.user_id)
+      .maybeSingle(),
+  ]);
+  return { kunde: kundeRes.data ?? null, ich: ichRes.data ?? null };
+}
+
+// Anschriftenblock einer Partei als Zeilen, leere Zeilen fallen weg.
+function parteiZeilen(name, strasse, plzOrt) {
+  return [name, strasse, plzOrt].map((z) => String(z ?? "").trim()).filter(Boolean);
+}
+
+function renderContractText(contract, blocks, items, parteien = {}) {
   const byParent = new Map();
   for (const b of blocks) {
     const key = b.parent_id ?? "root";
@@ -1070,6 +1103,40 @@ function renderContractText(contract, blocks, items) {
   html.push(`<h1>${escapeHtml(contract.title_page_heading || contract.name || "Vertrag")}</h1>`);
   plain.push(String(contract.title_page_heading || contract.name || "Vertrag").toUpperCase());
   plain.push("");
+
+  // ── Titelseite: Kunde "und" Auftragnehmer ──
+  // Gehoert zum Vertragstext und damit auch in die Pruefsumme: wer
+  // unterschreibt, unterschreibt zwischen genau diesen beiden Parteien.
+  const k = parteien.kunde;
+  const i = parteien.ich;
+  const kundeZeilen = k
+    ? parteiZeilen(
+        [k.first_name, k.name].filter(Boolean).join(" "),
+        k.street,
+        [k.zip, k.city].filter(Boolean).join(" ")
+      )
+    : [];
+  const ichZeilen = i
+    ? parteiZeilen(
+        [i.first_name, i.last_name].filter(Boolean).join(" "),
+        [i.street, i.street_number].filter(Boolean).join(" "),
+        [i.zip, i.city].filter(Boolean).join(" ")
+      )
+    : [];
+
+  if (kundeZeilen.length || ichZeilen.length) {
+    if (kundeZeilen.length) {
+      html.push(`<h3>${kundeZeilen.map(escapeHtml).join("<br>")}</h3>`);
+      plain.push(...kundeZeilen);
+    }
+    html.push("<h3>und</h3>");
+    plain.push("", "und", "");
+    if (ichZeilen.length) {
+      html.push(`<h3>${ichZeilen.map(escapeHtml).join("<br>")}</h3>`);
+      plain.push(...ichZeilen);
+    }
+    plain.push("");
+  }
 
   function walk(parentKey, depth) {
     for (const block of byParent.get(parentKey) ?? []) {
@@ -1256,7 +1323,7 @@ portalRouter.post("/portal/sign", requirePortalSession, async (req, res) => {
         .order("position", { ascending: true }),
     ]);
 
-    const rendered = renderContractText(contract, blocks ?? [], items ?? []);
+    const rendered = renderContractText(contract, blocks ?? [], items ?? [], await ladeParteien(contract));
     const contentHash = createHash("sha256").update(rendered.html, "utf8").digest("hex");
 
     // Der Kunde unterschreibt, was auf seinem Bildschirm steht. Wurde der
