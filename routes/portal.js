@@ -1086,6 +1086,12 @@ function parteiZeilen(name, strasse, plzOrt) {
   return [name, strasse, plzOrt].map((z) => String(z ?? "").trim()).filter(Boolean);
 }
 
+// Teile einer Zeile zusammensetzen ("49084 " + "Osnabrueck"): jeder Teil
+// wird vorher getrimmt, sonst entstehen doppelte Leerzeichen.
+function teile(...werte) {
+  return werte.map((w) => String(w ?? "").trim()).filter(Boolean).join(" ");
+}
+
 function renderContractText(contract, blocks, items, parteien = {}) {
   const byParent = new Map();
   for (const b of blocks) {
@@ -1111,16 +1117,16 @@ function renderContractText(contract, blocks, items, parteien = {}) {
   const i = parteien.ich;
   const kundeZeilen = k
     ? parteiZeilen(
-        [k.first_name, k.name].filter(Boolean).join(" "),
+        teile(k.first_name, k.name),
         k.street,
-        [k.zip, k.city].filter(Boolean).join(" ")
+        teile(k.zip, k.city)
       )
     : [];
   const ichZeilen = i
     ? parteiZeilen(
-        [i.first_name, i.last_name].filter(Boolean).join(" "),
-        [i.street, i.street_number].filter(Boolean).join(" "),
-        [i.zip, i.city].filter(Boolean).join(" ")
+        teile(i.first_name, i.last_name),
+        teile(i.street, i.street_number),
+        teile(i.zip, i.city)
       )
     : [];
 
