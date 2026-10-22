@@ -386,6 +386,151 @@ async function setMilestone(userId, jobId, milestoneKey) {
   if (error) console.error(`milestone ${milestoneKey} failed:`, error.message);
 }
 
+// ── Meilenstein-Erkennung ────────────────────────────────────────────────────
+// Ordnet eine bereits gespeicherte Mail den Meilensteinen zu, die ein Mensch
+// daran ablesen wuerde. Das Ergebnis ist immer nur ein VORSCHLAG: gesetzt wird
+// der Meilenstein erst, wenn der Nutzer ihn bestaetigt. Grund: eine falsch
+// gesetzte Markierung macht die Fortschrittsliste wertlos, ein falscher
+// Vorschlag kostet nur einen Klick.
+//
+// Vorgeschlagen werden nur Meilensteine mit source='detection'. Alles was ein
+// Trigger oder ein Tool sicher setzt (Zahlung gebucht, Vertrag unterschrieben)
+// bleibt aussen vor - sonst gaebe es zwei Wege fuer denselben Haken.
+const MS_TEXT_LIMIT = 1200;
+
+async function detectMilestones(mail) {
+  if (!mail?.user_id || !mail?.job_id || !mail?.id) return { suggested: [] };
+
+  const { data: typen } = await supabaseAdmin
+    .from("milestone_types")
+    .select("key, title, detect_hint")
+    .eq("source", "detection")
+    .eq("is_trackable", true)
+    .order("sort_order");
+  if (!typen?.length) return { suggested: [] };
+
+  // Was der Job schon hat, braucht keinen Vorschlag mehr.
+  const { data: gesetzt } = await supabaseAdmin
+    .from("milestones")
+    .select("milestone_key")
+    .eq("job_id", mail.job_id);
+  const schonGesetzt = new Set((gesetzt ?? []).map((m) => m.milestone_key));
+
+  // Ein offener Vorschlag pro Job und Meilenstein genuegt.
+  const { data: offen } = await supabaseAdmin
+    .from("milestone_suggestions")
+    .select("milestone_key")
+    .eq("job_id", mail.job_id)
+    .eq("status", "open");
+  const schonVorgeschlagen = new Set((offen ?? []).map((s) => s.milestone_key));
+
+  const kandidaten = typen.filter(
+    (t) => !schonGesetzt.has(t.key) && !schonVorgeschlagen.has(t.key)
+  );
+  if (!kandidaten.length) return { suggested: [] };
+
+  const text = (mail.body_text ?? "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .replace(/\r\n/g, "\n")
+    .slice(0, MS_TEXT_LIMIT);
+
+  const richtung =
+    mail.direction === "incoming"
+      ? "Diese Mail hat der Kunde geschrieben."
+      : "Diese Mail hat der Fotograf an den Kunden geschrieben.";
+
+  const liste = kandidaten
+    .map((t) => `- ${t.key}: ${t.detect_hint || t.title}`)
+    .join("\n");
+
+  const prompt = `Du ordnest eine E-Mail den Projekt-Meilensteinen eines Fotografen zu.
+${richtung}
+
+Moegliche Meilensteine:
+${liste}
+
+Regeln:
+- Waehle nur, was aus dem Text klar hervorgeht. Im Zweifel nichts waehlen.
+- Eine Ankuendigung ist kein Meilenstein ("ich schicke dir gleich das Angebot" ist nicht offer_sent).
+- Mehrere Meilensteine sind moeglich, aber nur wenn jeder einzeln belegt ist.
+- confidence: 0.0 bis 1.0, wie sicher der Beleg im Text ist.
+- reason: ein kurzer Satz, woran du es festmachst.
+
+Antworte NUR mit JSON:
+{"milestones":[{"key":"offer_sent","confidence":0.9,"reason":"Die Mail nennt Pakete und Preise als Angebot."}]}
+
+Betreff: ${mail.subject ?? ""}
+Nachricht:
+${text}`;
+
+  let aiResponse;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    aiResponse = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 500,
+        temperature: 0,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (aiResponse.status !== 529) break;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  const aiData = await aiResponse.json();
+  const rawText = (aiData.content?.[0]?.text ?? "").trim();
+  const objectMatch = rawText.match(/\{[\s\S]*\}/);
+  if (!objectMatch) {
+    console.error("milestone detection: keine JSON-Antwort:", rawText.slice(0, 200));
+    return { suggested: [] };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(objectMatch[0]);
+  } catch (e) {
+    console.error("milestone detection: JSON kaputt:", e.message);
+    return { suggested: [] };
+  }
+
+  const erlaubt = new Set(kandidaten.map((t) => t.key));
+  const zeilen = (parsed.milestones ?? [])
+    .filter((m) => erlaubt.has(m?.key) && Number(m?.confidence) >= 0.6)
+    .map((m) => ({
+      user_id: mail.user_id,
+      job_id: mail.job_id,
+      milestone_key: m.key,
+      mail_message_id: mail.id,
+      confidence: Number(m.confidence),
+      reason: typeof m.reason === "string" ? m.reason.slice(0, 300) : null,
+    }));
+
+  if (!zeilen.length) return { suggested: [] };
+
+  // Einfaches insert, kein upsert: offene Vorschlaege wurden oben schon
+  // herausgefiltert, und der Eindeutigkeits-Index ist ein Teilindex
+  // (nur status='open'), auf den sich ON CONFLICT nicht beziehen kann.
+  const { error } = await supabaseAdmin
+    .from("milestone_suggestions")
+    .insert(zeilen);
+  if (error) {
+    console.error("milestone suggestions failed:", error.message);
+    return { suggested: [] };
+  }
+
+  console.log(
+    `milestone detection fuer ${mail.id}:`,
+    zeilen.map((z) => `${z.milestone_key} (${z.confidence})`).join(", ")
+  );
+  return { suggested: zeilen.map((z) => z.milestone_key) };
+}
+
 // ── Shared Tool-Detection Helper ─────────────────────────────────────────────
 function toBerlinDateTime(startAt) {
   const d = new Date(startAt);
@@ -1635,8 +1780,9 @@ app.post("/send-mail", async (req, res) => {
       ...(attachments.length ? { attachments } : {}),
     });
 
-    // Meilenstein "Anfrage beantwortet": die erste ausgehende Mail zu einem Job.
-    await setMilestone(userId, job_id, "inquiry_reply");
+    // Hinweis: "Anfrage beantwortet" wurde frueher hier pauschal bei jeder
+    // ersten Mail zum Job gesetzt. Das stimmte oft, aber nicht immer. Der
+    // Meilenstein laeuft jetzt ueber /detect-milestones wie alle anderen.
 
     return res.json({
       ok: true,
@@ -1647,6 +1793,46 @@ app.post("/send-mail", async (req, res) => {
     return res.status(500).json({
       error: e?.message ?? String(e),
     });
+  }
+});
+app.post("/detect-milestones", async (req, res) => {
+  try {
+    const { jwt, mail_message_id } = req.body || {};
+    if (!jwt || !mail_message_id) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const supabaseUser = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY,
+      { global: { headers: { Authorization: `Bearer ${jwt}` } } }
+    );
+    const { data: userData, error: userErr } = await supabaseUser.auth.getUser();
+    if (userErr || !userData?.user) {
+      return res.status(401).json({ error: "Invalid user" });
+    }
+    const userId = userData.user.id;
+
+    // Der Text kommt aus der Datenbank, nicht vom Client: entscheidend ist,
+    // was tatsaechlich gespeichert wurde - egal ob die KI ihn geschrieben hat
+    // oder der Nutzer ihn von Hand getippt hat.
+    const { data: mail, error: mailErr } = await supabaseAdmin
+      .from("mail_messages")
+      .select("id, user_id, job_id, direction, subject, body_text")
+      .eq("id", mail_message_id)
+      .maybeSingle();
+
+    if (mailErr || !mail || mail.user_id !== userId) {
+      return res.status(404).json({ error: "Mail not found" });
+    }
+    if (!mail.job_id) {
+      return res.json({ ok: true, suggested: [], note: "no_job" });
+    }
+
+    const result = await detectMilestones(mail);
+    return res.json({ ok: true, suggested: result.suggested });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 app.post("/retry-ai-analysis", async (req, res) => {
