@@ -1517,7 +1517,8 @@ app.post("/delete-mail-account", async (req, res) => {
 });
 app.post("/send-mail", async (req, res) => {
   try {
-    const { jwt, mail_account_id, to, subject, body, job_id } = req.body || {};
+    const { jwt, mail_account_id, to, subject, body, job_id, invoice_id } =
+      req.body || {};
 
     if (!jwt || !mail_account_id || !to || !subject || !body) {
       return res.status(400).json({
@@ -1581,22 +1582,27 @@ app.post("/send-mail", async (req, res) => {
     });
 
     // ── Festgesetzte Rechnung anhaengen ──────────────────────────────────
-    // Entscheidend ist der Datenbestand, nicht was die App behauptet: nur
-    // eine Rechnung, die wirklich festgesetzt ist und ein PDF hat, geht mit.
-    // Die Datei wird ueber die job_id gesucht, nie ueber einen vom Client
-    // gelieferten Pfad - sonst liesse sich beliebiges aus dem Storage holen.
+    // Welche Rechnung gemeint ist, sagt der Client ueber invoice_id - das ist
+    // die Rechnung aus dem Buchungs-Tool. Ohne invoice_id haengt nichts an:
+    // ein Job hat im Lauf der Zeit mehrere festgesetzte Rechnungen
+    // (Anzahlung, Teil-/Schlussrechnung, Stornos), "die neueste" waere also
+    // geraten und wuerde an jede spaetere Mail zum Job etwas anhaengen.
+    //
+    // Der Server prueft danach selbst: gehoert sie diesem Nutzer, gehoert sie
+    // zu diesem Job, ist sie festgesetzt, hat sie ein PDF. Den Storage-Pfad
+    // holt er aus der Datenbank - ein vom Client gelieferter Pfad wird nie
+    // akzeptiert, sonst liesse sich beliebiges aus dem Storage holen.
     const attachments = [];
 
-    if (job_id) {
+    if (job_id && invoice_id) {
       const { data: rechnung } = await supabaseAdmin
         .from("invoices")
         .select("id, invoice_number, pdf_path, status, user_id")
+        .eq("id", invoice_id)
         .eq("job_id", job_id)
         .eq("user_id", userId)
         .neq("status", "draft")
         .not("pdf_path", "is", null)
-        .order("created_at", { ascending: false })
-        .limit(1)
         .maybeSingle();
 
       if (rechnung?.pdf_path) {
