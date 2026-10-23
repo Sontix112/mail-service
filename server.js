@@ -2573,10 +2573,23 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
 app.post("/ai-compose-new", async (req, res) => {
   try {
     const {
-      user_id, client_id, job_id,
+      jwt, client_id, job_id,
       ai_hint, current_subject, current_body, mode,
     } = req.body || {};
-    if (!user_id) return res.status(400).json({ error: "user_id required" });
+    if (!jwt) return res.status(400).json({ error: "jwt required" });
+
+    // Wie in den uebrigen Endpunkten: der Nutzer kommt aus dem Token, nicht
+    // aus dem Body. Sonst koennte der Client eine fremde user_id schicken.
+    const supabaseUser = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY,
+      { global: { headers: { Authorization: `Bearer ${jwt}` } } }
+    );
+    const { data: userData, error: userErr } = await supabaseUser.auth.getUser();
+    if (userErr || !userData?.user) {
+      return res.status(401).json({ error: "Invalid user", detail: userErr?.message ?? null });
+    }
+    const user_id = userData.user.id;
 
     const istUeberarbeiten = mode === "rewrite";
     const hinweis = (ai_hint ?? "").trim();
