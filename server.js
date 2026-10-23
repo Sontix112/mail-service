@@ -2340,7 +2340,7 @@ app.post("/ai-compose", async (req, res) => {
       if (name === "get_client_info") {
         const { data } = await supabaseAdmin
           .from("clients")
-          .select("first_name, last_name, email, notes")
+          .select("first_name, last_name:name, email, notes")
           .eq("id", client_id)
           .maybeSingle();
         return data ?? {};
