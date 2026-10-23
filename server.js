@@ -398,12 +398,63 @@ async function setMilestone(userId, jobId, milestoneKey) {
 // bleibt aussen vor - sonst gaebe es zwei Wege fuer denselben Haken.
 const MS_TEXT_LIMIT = 1200;
 
+// Manche Meilensteine unterscheiden sich nicht im Wortlaut der Mail, sondern
+// in der Datenlage: ob eine Zahlung die Anzahlung oder der Restbetrag war,
+// nennt jeder Kunde anders (Anzahlung, Teilzahlung, Kaution, Rest). Die KI
+// erkennt deshalb nur die allgemeine Gruppe (detect_as), und hier faellt die
+// Entscheidung anhand dessen, was tatsaechlich in der Datenbank steht.
+//
+// Rueckgabe: { key, resolution } - oder null, wenn die Datenlage den Vorschlag
+// nicht traegt. Dann entsteht lieber gar kein Vorschlag als ein falscher.
+async function resolveMilestoneGroup(gruppe, mail, gruppenTypen) {
+  if (gruppe !== "payment_confirmation") {
+    return gruppenTypen.length === 1
+      ? { key: gruppenTypen[0].key, resolution: null }
+      : null;
+  }
+
+  const { data: rechnung } = await supabaseAdmin
+    .from("invoices")
+    .select("id, invoice_number, invoice_type, paid_at, status")
+    .eq("job_id", mail.job_id)
+    .eq("user_id", mail.user_id)
+    .eq("status", "paid")
+    .not("paid_at", "is", null)
+    .order("paid_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!rechnung) {
+    console.log(
+      `milestone detection: Zahlungsbestaetigung erkannt, aber keine bezahlte Rechnung am Job ${mail.job_id} - kein Vorschlag`
+    );
+    return null;
+  }
+
+  const istAnzahlung = ["deposit", "partial"].includes(rechnung.invoice_type);
+  const key = istAnzahlung
+    ? "deposit_confirmation_sent"
+    : "payment_confirmation_sent";
+
+  if (!gruppenTypen.some((t) => t.key === key)) return null;
+
+  return {
+    key,
+    resolution: {
+      invoice_id: rechnung.id,
+      invoice_number: rechnung.invoice_number,
+      invoice_type: rechnung.invoice_type,
+      paid_at: rechnung.paid_at,
+    },
+  };
+}
+
 async function detectMilestones(mail) {
   if (!mail?.user_id || !mail?.job_id || !mail?.id) return { suggested: [] };
 
   const { data: typen } = await supabaseAdmin
     .from("milestone_types")
-    .select("key, title, detect_hint")
+    .select("key, title, detect_hint, detect_as")
     .eq("source", "detection")
     .eq("is_trackable", true)
     .order("sort_order");
@@ -439,8 +490,18 @@ async function detectMilestones(mail) {
       ? "Diese Mail hat der Kunde geschrieben."
       : "Diese Mail hat der Fotograf an den Kunden geschrieben.";
 
-  const liste = kandidaten
-    .map((t) => `- ${t.key}: ${t.detect_hint || t.title}`)
+  // Meilensteine mit gemeinsamem detect_as erscheinen im Prompt als EIN
+  // Eintrag. Sonst muesste die KI eine Unterscheidung treffen, die im Text
+  // gar nicht steht - und raet dann.
+  const gruppen = new Map();
+  for (const t of kandidaten) {
+    const g = t.detect_as || t.key;
+    if (!gruppen.has(g)) gruppen.set(g, []);
+    gruppen.get(g).push(t);
+  }
+
+  const liste = [...gruppen.entries()]
+    .map(([g, ts]) => `- ${g}: ${ts[0].detect_hint || ts[0].title}`)
     .join("\n");
 
   const prompt = `Du ordnest eine E-Mail den Projekt-Meilensteinen eines Fotografen zu.
@@ -452,7 +513,10 @@ ${liste}
 Regeln:
 - Waehle nur, was aus dem Text klar hervorgeht. Im Zweifel nichts waehlen.
 - Eine Ankuendigung ist kein Meilenstein ("ich schicke dir gleich das Angebot" ist nicht offer_sent).
-- Mehrere Meilensteine sind moeglich, aber nur wenn jeder einzeln belegt ist.
+- Mehrere Meilensteine sind moeglich, aber nur wenn jeder fuer sich belegt ist
+  und einen EIGENEN Sachverhalt beschreibt. Zwei Lesarten desselben Satzes sind
+  kein zweiter Meilenstein - entscheide dich dann fuer einen.
+- Nimm die Schluessel genau so, wie sie oben stehen. Erfinde keine Varianten.
 - confidence: 0.0 bis 1.0, wie sicher der Beleg im Text ist.
 - reason: ein kurzer Satz, woran du es festmachst.
 
@@ -499,17 +563,28 @@ ${text}`;
     return { suggested: [] };
   }
 
-  const erlaubt = new Set(kandidaten.map((t) => t.key));
-  const zeilen = (parsed.milestones ?? [])
-    .filter((m) => erlaubt.has(m?.key) && Number(m?.confidence) >= 0.6)
-    .map((m) => ({
+  const zeilen = [];
+  for (const m of parsed.milestones ?? []) {
+    if (!gruppen.has(m?.key) || Number(m?.confidence) < 0.6) continue;
+
+    const aufgeloest = await resolveMilestoneGroup(
+      m.key,
+      mail,
+      gruppen.get(m.key)
+    );
+    if (!aufgeloest) continue;
+    if (zeilen.some((z) => z.milestone_key === aufgeloest.key)) continue;
+
+    zeilen.push({
       user_id: mail.user_id,
       job_id: mail.job_id,
-      milestone_key: m.key,
+      milestone_key: aufgeloest.key,
       mail_message_id: mail.id,
       confidence: Number(m.confidence),
       reason: typeof m.reason === "string" ? m.reason.slice(0, 300) : null,
-    }));
+      resolution: aufgeloest.resolution,
+    });
+  }
 
   if (!zeilen.length) return { suggested: [] };
 
