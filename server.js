@@ -485,6 +485,14 @@ async function detectMilestones(mail) {
     .replace(/\r\n/g, "\n")
     .slice(0, MS_TEXT_LIMIT);
 
+  // "Neue Mail" ist unser eigener Platzhalter, kein Betreff den jemand
+  // geschrieben hat. Mitgeschickt wuerde er die Einordnung nur stoeren.
+  const betreff = (mail.subject ?? "").trim();
+  const betreffZeile =
+    betreff && betreff.toLowerCase() !== "neue mail"
+      ? `Betreff: ${betreff}\n`
+      : "";
+
   const richtung =
     mail.direction === "incoming"
       ? "Diese Mail hat der Kunde geschrieben."
@@ -517,14 +525,16 @@ Regeln:
   und einen EIGENEN Sachverhalt beschreibt. Zwei Lesarten desselben Satzes sind
   kein zweiter Meilenstein - entscheide dich dann fuer einen.
 - Nimm die Schluessel genau so, wie sie oben stehen. Erfinde keine Varianten.
+- Entscheidend ist der Nachrichtentext. Der Betreff ist oft nichtssagend, ein
+  Platzhalter oder passt nicht zum Inhalt - er darf ein Erkennen weder
+  begruenden noch verhindern.
 - confidence: 0.0 bis 1.0, wie sicher der Beleg im Text ist.
 - reason: ein kurzer Satz, woran du es festmachst.
 
 Antworte NUR mit JSON:
 {"milestones":[{"key":"offer_sent","confidence":0.9,"reason":"Die Mail nennt Pakete und Preise als Angebot."}]}
 
-Betreff: ${mail.subject ?? ""}
-Nachricht:
+${betreffZeile}Nachricht:
 ${text}`;
 
   let aiResponse;
