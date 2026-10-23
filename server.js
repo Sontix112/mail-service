@@ -2566,6 +2566,203 @@ Nutze die verfügbaren Tools um alle nötigen Informationen zu sammeln. Gib am E
   }
 });
 
+// ── /ai-compose-new ─────────────────────────────────────────────────────────
+// Schreibt eine NEUE Mail (keine Antwort) oder ueberarbeitet einen Entwurf.
+// Body: { user_id, client_id, job_id, ai_hint, current_subject, current_body, mode }
+// mode: "new" (Standard) | "rewrite"
+app.post("/ai-compose-new", async (req, res) => {
+  try {
+    const {
+      user_id, client_id, job_id,
+      ai_hint, current_subject, current_body, mode,
+    } = req.body || {};
+    if (!user_id) return res.status(400).json({ error: "user_id required" });
+
+    const istUeberarbeiten = mode === "rewrite";
+    const hinweis = (ai_hint ?? "").trim();
+    const bestehenderText = (current_body ?? "").trim();
+
+    if (!istUeberarbeiten && !hinweis) {
+      return res.status(400).json({ error: "ai_hint required" });
+    }
+    if (istUeberarbeiten && !bestehenderText) {
+      return res.status(400).json({ error: "current_body required for rewrite" });
+    }
+
+    // ── Stil des Nutzers ────────────────────────────────────────────────────
+    // Diese Angaben pflegt der Nutzer in den Einstellungen. Ohne sie klingt
+    // jede Mail nach Standardassistent statt nach ihm.
+    const { data: einst } = await supabaseAdmin
+      .from("user_settings")
+      .select("business_name, business_description, ai_tone, ai_salutation, other_instructions")
+      .eq("user_id", user_id)
+      .maybeSingle();
+
+    const stilBlock = [
+      einst?.business_name ? `Betrieb: ${einst.business_name}` : null,
+      einst?.business_description ? `Der Betrieb macht: ${einst.business_description.trim()}` : null,
+      einst?.ai_tone ? `Tonfall: ${einst.ai_tone}` : null,
+      einst?.ai_salutation === "du" ? "Duze den Kunden." : "Sieze den Kunden.",
+      einst?.other_instructions
+        ? `Eigene Vorgaben des Nutzers, sie haben Vorrang vor allem anderen:\n${einst.other_instructions.trim()}`
+        : null,
+    ].filter(Boolean).join("\n");
+
+    // ── Kunde ───────────────────────────────────────────────────────────────
+    let kundenBlock = "";
+    if (client_id) {
+      const { data: k } = await supabaseAdmin
+        .from("clients")
+        .select("first_name, name, full_name, notes")
+        .eq("id", client_id)
+        .maybeSingle();
+      if (k) {
+        const name = (k.full_name || k.first_name || "").trim();
+        kundenBlock = [
+          name ? `Kunde: ${name}` : null,
+          k.notes ? `Notizen zum Kunden: ${k.notes.trim()}` : null,
+        ].filter(Boolean).join("\n");
+      }
+    }
+
+    // ── Auftrag ─────────────────────────────────────────────────────────────
+    let jobBlock = "";
+    if (job_id) {
+      const { data: j } = await supabaseAdmin
+        .from("jobs")
+        .select("title, event_date, notes")
+        .eq("id", job_id)
+        .maybeSingle();
+      if (j) {
+        jobBlock = [
+          `Auftrag: ${j.title ?? "ohne Titel"}`,
+          j.event_date ? `Termin des Auftrags: ${j.event_date}` : null,
+          j.notes ? `Notizen zum Auftrag: ${j.notes.trim()}` : null,
+        ].filter(Boolean).join("\n");
+      }
+    }
+
+    // ── Bisheriger Mailverkehr ──────────────────────────────────────────────
+    // Nur als Hintergrund: wie bisher angesprochen wurde, wo der Kunde steht.
+    // Es wird ausdruecklich NICHT darauf geantwortet.
+    let verlauf = "";
+    if (client_id) {
+      const { data: msgs } = await supabaseAdmin
+        .from("mail_messages")
+        .select("direction, subject, body_clean, body_text, created_at")
+        .eq("client_id", client_id)
+        .order("created_at", { ascending: false })
+        .limit(6);
+      if (msgs && msgs.length > 0) {
+        verlauf = msgs
+          .slice()
+          .reverse()
+          .map((m) => {
+            const wer = m.direction === "incoming" ? "Kunde" : "Ich";
+            const text = (m.body_clean || m.body_text || "").trim().slice(0, 700);
+            return `${wer} (${m.subject || "ohne Betreff"}):\n${text}`;
+          })
+          .join("\n\n---\n\n");
+      }
+    }
+
+    const betreffAktuell = (current_subject ?? "").trim();
+    const betreffIstPlatzhalter =
+      !betreffAktuell || betreffAktuell.toLowerCase() === "neue mail";
+
+    // ── Auftrag an das Modell ───────────────────────────────────────────────
+    const aufgabe = istUeberarbeiten
+      ? `Ueberarbeite den folgenden, bereits verfassten Mailtext.
+
+BISHERIGER TEXT:
+${bestehenderText}
+
+${hinweis
+  ? `AENDERUNGSWUNSCH DES NUTZERS:\n${hinweis}`
+  : "Der Nutzer hat keinen besonderen Wunsch genannt. Verbessere Formulierung, Rechtschreibung und Aufbau, ohne den Inhalt zu veraendern."}
+
+Behalte alle inhaltlichen Aussagen, Zahlen und Termine des bisherigen Textes bei,
+solange der Aenderungswunsch nichts anderes verlangt. Fuege nichts hinzu.`
+      : `Schreibe eine neue E-Mail an den Kunden. Das ist KEINE Antwort auf eine
+eingegangene Mail, sondern eine Mail, die der Nutzer von sich aus schickt.
+
+WAS IN DIE MAIL SOLL:
+${hinweis}`;
+
+    const heute = new Date().toISOString().split("T")[0];
+    const kontext = [kundenBlock, jobBlock].filter(Boolean).join("\n\n");
+
+    const nutzerNachricht = `Heute ist der ${heute}.
+
+${aufgabe}
+${kontext ? `\nKONTEXT:\n${kontext}` : ""}
+${verlauf ? `\nBISHERIGER MAILVERKEHR, nur als Hintergrund - antworte nicht darauf:\n${verlauf}` : ""}
+
+${betreffIstPlatzhalter
+  ? `Gib deine Antwort in genau diesem Format zurueck:\nBETREFF: <kurzer, konkreter Betreff>\n---\n<Mailtext>`
+  : `Der Betreff steht fest ("${betreffAktuell}") und wird nicht geaendert. Gib nur den Mailtext zurueck.`}
+
+Keine Erklaerungen, keine Einleitung, kein Markdown.`;
+
+    const systemPrompt = `Du schreibst E-Mails fuer einen Selbststaendigen, in seinem Namen und aus seiner Sicht ("ich").
+${stilBlock}
+
+Erfinde keine Angaben, Zusagen, Preise oder Termine, die dir nicht genannt wurden.
+Fehlt dir eine Angabe, formuliere die Mail so, dass sie ohne diese Angabe auskommt.`;
+
+    let aiResp;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      aiResp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 1500,
+          temperature: 0.5,
+          system: systemPrompt,
+          messages: [{ role: "user", content: nutzerNachricht }],
+        }),
+      });
+      if (aiResp.status !== 529) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    const aiData = await aiResp.json();
+    if (aiData?.error) {
+      console.error("ai-compose-new: Anthropic error:", JSON.stringify(aiData.error));
+      return res.status(502).json({ error: aiData.error?.message ?? "KI nicht erreichbar" });
+    }
+
+    const rohText = (aiData?.content ?? [])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n")
+      .trim();
+
+    if (!rohText) {
+      return res.status(502).json({ error: "Die KI hat keinen Text geliefert." });
+    }
+
+    // Betreff abtrennen, falls das Modell einen geliefert hat.
+    let betreff = betreffAktuell;
+    let text = rohText;
+    const treffer = rohText.match(/^BETREFF:\s*(.+?)\s*\n-{3,}\s*\n([\s\S]+)$/);
+    if (treffer) {
+      if (betreffIstPlatzhalter) betreff = treffer[1].trim();
+      text = treffer[2].trim();
+    }
+
+    return res.json({ ok: true, subject: betreff, body: text });
+  } catch (e) {
+    console.error("ai-compose-new error:", e);
+    return res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 app.post("/link-mail-to-job", async (req, res) => {
   try {
     const { jwt, system_action_id, client_id, job_id } = req.body || {};
