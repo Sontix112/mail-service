@@ -2449,9 +2449,21 @@ app.post("/ai-compose-new", async (req, res) => {
     const {
       jwt, client_id, job_id,
       ai_hint, current_subject, current_body, mode,
-      active_chips, mail_parts,
+      active_chips, mail_parts: mailPartsRoh,
     } = req.body || {};
     if (!jwt) return res.status(400).json({ error: "jwt required" });
+
+    // FlutterFlow schickt mail_parts als JSON-Text, andere Aufrufer als Array.
+    // Beides wird hier auf ein Array gebracht, damit es unten einerlei ist.
+    let mail_parts = mailPartsRoh;
+    if (typeof mail_parts === "string") {
+      try {
+        mail_parts = JSON.parse(mail_parts || "[]");
+      } catch {
+        console.warn("ai-compose-new: mail_parts ist kein gueltiges JSON");
+        mail_parts = [];
+      }
+    }
 
     // Wie in den uebrigen Endpunkten: der Nutzer kommt aus dem Token, nicht
     // aus dem Body. Sonst koennte der Client eine fremde user_id schicken.
