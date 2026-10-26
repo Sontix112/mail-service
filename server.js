@@ -2580,6 +2580,47 @@ app.post("/ai-compose-new", async (req, res) => {
         }
       }
 
+      // Zweite Form: die App schickt nur die IDs der ausgewaehlten Objekte,
+      // die Texte baut der Server. So muss die App nichts zusammenstueckeln
+      // und die Mail zeigt immer den aktuellen Stand des Angebots.
+      const euro = (n) =>
+        Number(n ?? 0).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+
+      for (const p of Array.isArray(mail_parts) ? mail_parts : []) {
+        if (!p?.chip || !Array.isArray(p.ids) || !p.ids.length) continue;
+        if (werteJeChip.has(p.chip)) continue; // ausdrueckliche werte haben Vorrang
+
+        if (p.chip === "offer" || p.chip === "price_list") {
+          const { data: angebote } = await supabaseAdmin
+            .from("offers")
+            .select("id, title, total_gross, items")
+            .in("id", p.ids);
+
+          const texte = (angebote ?? []).map((o) => {
+            const posten = (Array.isArray(o.items) ? o.items : [])
+              .map((i) => {
+                const name = String(i?.title ?? "").trim();
+                if (!name) return null;
+                const beschr = String(i?.description ?? "")
+                  .split("\n")
+                  .map((z) => z.replace(/^[-*\s]+/, "").trim())
+                  .filter(Boolean)
+                  .join(", ");
+                const preis = i?.price != null ? ` ${euro(i.price)}` : "";
+                return `${name}${preis}${beschr ? ` (${beschr})` : ""}`;
+              })
+              .filter(Boolean);
+
+            const kopf = `${o.title ?? "Angebot"}${
+              o.total_gross != null ? `, Gesamtpreis ${euro(o.total_gross)}` : ""
+            }`;
+            return posten.length ? `${kopf} - Leistungen: ${posten.join("; ")}` : kopf;
+          });
+
+          if (texte.length) werteJeChip.set(p.chip, texte.join(" || "));
+        }
+      }
+
       bausteinBlock = chipKeys
         .map((k) => {
           const c = (chips ?? []).find((x) => x.key === k);
