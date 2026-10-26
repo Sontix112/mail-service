@@ -369,177 +369,45 @@ app.post("/list-mails", async (req, res) => {
     });
   }
 });
-// ── Meilenstein-Helfer ───────────────────────────────────────────────────────
-// Setzt einen Meilenstein idempotent. Der Unique-Constraint auf
-// (job_id, milestone_key) sorgt dafuer, dass ein Meilenstein pro Job genau
-// einmal existiert — wiederholte Aufrufe tun nichts.
-// Fehler werden nur geloggt: ein fehlender Meilenstein darf niemals den
-// Mailfluss stoppen.
-async function setMilestone(userId, jobId, milestoneKey) {
-  if (!userId || !jobId || !milestoneKey) return;
-  const { error } = await supabaseAdmin
-    .from("milestones")
-    .upsert(
-      { user_id: userId, job_id: jobId, milestone_key: milestoneKey },
-      { onConflict: "job_id,milestone_key", ignoreDuplicates: true }
-    );
-  if (error) console.error(`milestone ${milestoneKey} failed:`, error.message);
-}
-
-// ── Meilenstein-Erkennung ────────────────────────────────────────────────────
-// Ordnet eine bereits gespeicherte Mail den Meilensteinen zu, die ein Mensch
-// daran ablesen wuerde. Das Ergebnis ist immer nur ein VORSCHLAG: gesetzt wird
-// der Meilenstein erst, wenn der Nutzer ihn bestaetigt. Grund: eine falsch
-// gesetzte Markierung macht die Fortschrittsliste wertlos, ein falscher
-// Vorschlag kostet nur einen Klick.
-//
-// Vorgeschlagen werden nur Meilensteine mit source='detection'. Alles was ein
-// Trigger oder ein Tool sicher setzt (Zahlung gebucht, Vertrag unterschrieben)
-// bleibt aussen vor - sonst gaebe es zwei Wege fuer denselben Haken.
+// ── Mail-Kurzfassung ─────────────────────────────────────────────────────────
+// Der Betreff taugt als Beschreibung selten: oft ist er ein Platzhalter
+// ("Neue Mail"), eine Kette von "Re:" oder er passt nicht zum Inhalt. Darum
+// fasst die KI in einem Satz zusammen, was tatsaechlich drinsteht. Der Satz
+// landet an der Mail; ein Trigger zieht die Zeile im Protokoll nach.
 const MS_TEXT_LIMIT = 1200;
 
-// Manche Meilensteine unterscheiden sich nicht im Wortlaut der Mail, sondern
-// in der Datenlage: ob eine Zahlung die Anzahlung oder der Restbetrag war,
-// nennt jeder Kunde anders (Anzahlung, Teilzahlung, Kaution, Rest). Die KI
-// erkennt deshalb nur die allgemeine Gruppe (detect_as), und hier faellt die
-// Entscheidung anhand dessen, was tatsaechlich in der Datenbank steht.
-//
-// Rueckgabe: { key, resolution } - oder null, wenn die Datenlage den Vorschlag
-// nicht traegt. Dann entsteht lieber gar kein Vorschlag als ein falscher.
-async function resolveMilestoneGroup(gruppe, mail, gruppenTypen) {
-  if (gruppe !== "payment_confirmation") {
-    return gruppenTypen.length === 1
-      ? { key: gruppenTypen[0].key, resolution: null }
-      : null;
-  }
-
-  const { data: rechnung } = await supabaseAdmin
-    .from("invoices")
-    .select("id, invoice_number, invoice_type, paid_at, status")
-    .eq("job_id", mail.job_id)
-    .eq("user_id", mail.user_id)
-    .eq("status", "paid")
-    .not("paid_at", "is", null)
-    .order("paid_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (!rechnung) {
-    console.log(
-      `milestone detection: Zahlungsbestaetigung erkannt, aber keine bezahlte Rechnung am Job ${mail.job_id} - kein Vorschlag`
-    );
-    return null;
-  }
-
-  const istAnzahlung = ["deposit", "partial"].includes(rechnung.invoice_type);
-  const key = istAnzahlung
-    ? "deposit_confirmation_sent"
-    : "payment_confirmation_sent";
-
-  if (!gruppenTypen.some((t) => t.key === key)) return null;
-
-  return {
-    key,
-    resolution: {
-      invoice_id: rechnung.id,
-      invoice_number: rechnung.invoice_number,
-      invoice_type: rechnung.invoice_type,
-      paid_at: rechnung.paid_at,
-    },
-  };
-}
-
-async function detectMilestones(mail) {
-  if (!mail?.user_id || !mail?.job_id || !mail?.id) return { suggested: [] };
-
-  const { data: typen } = await supabaseAdmin
-    .from("milestone_types")
-    .select("key, title, detect_hint, detect_as")
-    .eq("source", "detection")
-    .eq("is_trackable", true)
-    .order("sort_order");
-  if (!typen?.length) return { suggested: [] };
-
-  // Was der Job schon hat, braucht keinen Vorschlag mehr.
-  const { data: gesetzt } = await supabaseAdmin
-    .from("milestones")
-    .select("milestone_key")
-    .eq("job_id", mail.job_id);
-  const schonGesetzt = new Set((gesetzt ?? []).map((m) => m.milestone_key));
-
-  // Ein offener Vorschlag pro Job und Meilenstein genuegt.
-  const { data: offen } = await supabaseAdmin
-    .from("milestone_suggestions")
-    .select("milestone_key")
-    .eq("job_id", mail.job_id)
-    .eq("status", "open");
-  const schonVorgeschlagen = new Set((offen ?? []).map((s) => s.milestone_key));
-
-  const kandidaten = typen.filter(
-    (t) => !schonGesetzt.has(t.key) && !schonVorgeschlagen.has(t.key)
-  );
-  if (!kandidaten.length) return { suggested: [] };
+async function summarizeMail(mail) {
+  if (!mail?.id) return { summary: null };
 
   const text = (mail.body_text ?? "")
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
     .replace(/\r\n/g, "\n")
+    .trim()
     .slice(0, MS_TEXT_LIMIT);
 
-  // "Neue Mail" ist unser eigener Platzhalter, kein Betreff den jemand
-  // geschrieben hat. Mitgeschickt wuerde er die Einordnung nur stoeren.
+  if (!text) return { summary: null };
+
   const betreff = (mail.subject ?? "").trim();
   const betreffZeile =
-    betreff && betreff.toLowerCase() !== "neue mail"
-      ? `Betreff: ${betreff}\n`
-      : "";
+    betreff && betreff.toLowerCase() !== "neue mail" ? `Betreff: ${betreff}\n` : "";
 
   const richtung =
     mail.direction === "incoming"
-      ? "Diese Mail hat der Kunde geschrieben."
-      : "Diese Mail hat der Fotograf an den Kunden geschrieben.";
+      ? "Diese Mail hat der Kunde geschrieben. Fasse zusammen, was er mitteilt oder moechte."
+      : "Diese Mail hat der Fotograf an den Kunden geschrieben. Fasse zusammen, was er mitteilt.";
 
-  // Meilensteine mit gemeinsamem detect_as erscheinen im Prompt als EIN
-  // Eintrag. Sonst muesste die KI eine Unterscheidung treffen, die im Text
-  // gar nicht steht - und raet dann.
-  const gruppen = new Map();
-  for (const t of kandidaten) {
-    const g = t.detect_as || t.key;
-    if (!gruppen.has(g)) gruppen.set(g, []);
-    gruppen.get(g).push(t);
-  }
+  const prompt = `${richtung}
 
-  const liste = [...gruppen.entries()]
-    .map(([g, ts]) => `- ${g}: ${ts[0].detect_hint || ts[0].title}`)
-    .join("\n");
-
-  const prompt = `Du ordnest eine E-Mail den Projekt-Meilensteinen eines Fotografen zu.
-${richtung}
-
-Moegliche Meilensteine:
-${liste}
-
-Regeln:
-- Waehle nur, was aus dem Text klar hervorgeht. Im Zweifel nichts waehlen.
-- Eine Ankuendigung ist kein Meilenstein ("ich schicke dir gleich das Angebot" ist nicht offer_sent).
-- Mehrere Meilensteine sind moeglich, aber nur wenn jeder fuer sich belegt ist
-  und einen EIGENEN Sachverhalt beschreibt. Zwei Lesarten desselben Satzes sind
-  kein zweiter Meilenstein - entscheide dich dann fuer einen.
-- Nimm die Schluessel genau so, wie sie oben stehen. Erfinde keine Varianten.
-- Entscheidend ist der Nachrichtentext. Der Betreff ist oft nichtssagend, ein
-  Platzhalter oder passt nicht zum Inhalt - er darf ein Erkennen weder
-  begruenden noch verhindern.
-- confidence: 0.0 bis 1.0, wie sicher der Beleg im Text ist.
-- reason: ein kurzer Satz, woran du es festmachst.
-
-Antworte NUR mit JSON:
-{"milestones":[{"key":"offer_sent","confidence":0.9,"reason":"Die Mail nennt Pakete und Preise als Angebot."}]}
+Schreibe GENAU EINEN Satz mit hoechstens 120 Zeichen, sachlich und ohne Einleitung.
+Nenne das Wesentliche: worum es geht und was daraus folgt. Keine Anrede, keine
+Grussformel, keine Wertung, keine Anfuehrungszeichen.
 
 ${betreffZeile}Nachricht:
 ${text}`;
 
-  let aiResponse;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    aiResponse = await fetch("https://api.anthropic.com/v1/messages", {
+  let resp;
+  for (let versuch = 0; versuch < 3; versuch++) {
+    resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -548,72 +416,44 @@ ${text}`;
       },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 500,
+        max_tokens: 200,
         temperature: 0,
         messages: [{ role: "user", content: prompt }],
       }),
     });
-    if (aiResponse.status !== 529) break;
+    if (resp.status !== 529) break;
     await new Promise((r) => setTimeout(r, 2000));
   }
 
-  const aiData = await aiResponse.json();
-  const rawText = (aiData.content?.[0]?.text ?? "").trim();
-  const objectMatch = rawText.match(/\{[\s\S]*\}/);
-  if (!objectMatch) {
-    console.error("milestone detection: keine JSON-Antwort:", rawText.slice(0, 200));
-    return { suggested: [] };
+  const data = await resp.json();
+  if (data?.error) {
+    console.error("summarize-mail: Anthropic error:", JSON.stringify(data.error));
+    return { summary: null };
   }
 
-  let parsed;
-  try {
-    parsed = JSON.parse(objectMatch[0]);
-  } catch (e) {
-    console.error("milestone detection: JSON kaputt:", e.message);
-    return { suggested: [] };
-  }
+  const satz = (data?.content ?? [])
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^["'„«]+|["'“»]+$/g, "")
+    .trim();
 
-  const zeilen = [];
-  for (const m of parsed.milestones ?? []) {
-    if (!gruppen.has(m?.key) || Number(m?.confidence) < 0.6) continue;
+  if (!satz) return { summary: null };
 
-    const aufgeloest = await resolveMilestoneGroup(
-      m.key,
-      mail,
-      gruppen.get(m.key)
-    );
-    if (!aufgeloest) continue;
-    if (zeilen.some((z) => z.milestone_key === aufgeloest.key)) continue;
-
-    zeilen.push({
-      user_id: mail.user_id,
-      job_id: mail.job_id,
-      milestone_key: aufgeloest.key,
-      mail_message_id: mail.id,
-      confidence: Number(m.confidence),
-      reason: typeof m.reason === "string" ? m.reason.slice(0, 300) : null,
-      resolution: aufgeloest.resolution,
-    });
-  }
-
-  if (!zeilen.length) return { suggested: [] };
-
-  // Einfaches insert, kein upsert: offene Vorschlaege wurden oben schon
-  // herausgefiltert, und der Eindeutigkeits-Index ist ein Teilindex
-  // (nur status='open'), auf den sich ON CONFLICT nicht beziehen kann.
   const { error } = await supabaseAdmin
-    .from("milestone_suggestions")
-    .insert(zeilen);
+    .from("mail_messages")
+    .update({ summary: satz })
+    .eq("id", mail.id);
+
   if (error) {
-    console.error("milestone suggestions failed:", error.message);
-    return { suggested: [] };
+    console.error("summarize-mail: update fehlgeschlagen:", error.message);
+    return { summary: satz, gespeichert: false };
   }
 
-  console.log(
-    `milestone detection fuer ${mail.id}:`,
-    zeilen.map((z) => `${z.milestone_key} (${z.confidence})`).join(", ")
-  );
-  return { suggested: zeilen.map((z) => z.milestone_key) };
+  console.log(`summary fuer ${mail.id}: ${satz}`);
+  return { summary: satz, gespeichert: true };
 }
 
 // ── Shared Tool-Detection Helper ─────────────────────────────────────────────
@@ -1280,9 +1120,6 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
                   // "booking" ist die verbindliche Zusage des Kunden (die
                   // Erkennung sortiert offer_response dann bewusst aus).
-                  if (detectedTools.includes("booking")) {
-                    await setMilestone(mail.user_id, action.job_id, "booking_accepted");
-                  }
 
                   console.log(`wait_for_reply ${action.id} completed, answer_reply created for ${clientName}, detected_tools: ${JSON.stringify(detectedTools)}`);
                 }
@@ -1381,9 +1218,6 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
                     },
                   });
 
-                if (toolResult.detectedTools.includes("booking")) {
-                  await setMilestone(mail.user_id, jobId4, "booking_accepted");
-                }
 
                 console.log(`Known client ${clientName4}: answer_reply created, tools: ${JSON.stringify(toolResult.detectedTools)}, dates: ${JSON.stringify(toolResult.detectedDates)}`);
               }
@@ -1865,10 +1699,6 @@ app.post("/send-mail", async (req, res) => {
       ...(attachments.length ? { attachments } : {}),
     });
 
-    // Hinweis: "Anfrage beantwortet" wurde frueher hier pauschal bei jeder
-    // ersten Mail zum Job gesetzt. Das stimmte oft, aber nicht immer. Der
-    // Meilenstein laeuft jetzt ueber /detect-milestones wie alle anderen.
-
     return res.json({
       ok: true,
       messageId: info.messageId,
@@ -1880,7 +1710,7 @@ app.post("/send-mail", async (req, res) => {
     });
   }
 });
-app.post("/detect-milestones", async (req, res) => {
+app.post("/summarize-mail", async (req, res) => {
   try {
     const { jwt, mail_message_id } = req.body || {};
     if (!jwt || !mail_message_id) {
@@ -1903,19 +1733,21 @@ app.post("/detect-milestones", async (req, res) => {
     // oder der Nutzer ihn von Hand getippt hat.
     const { data: mail, error: mailErr } = await supabaseAdmin
       .from("mail_messages")
-      .select("id, user_id, job_id, direction, subject, body_text")
+      .select("id, user_id, job_id, client_id, direction, subject, body_text")
       .eq("id", mail_message_id)
       .maybeSingle();
 
     if (mailErr || !mail || mail.user_id !== userId) {
       return res.status(404).json({ error: "Mail not found" });
     }
-    if (!mail.job_id) {
-      return res.json({ ok: true, suggested: [], note: "no_job" });
+    // Ohne Bezug zu Auftrag oder Kunde landet die Mail nicht im Protokoll -
+    // dann lohnt die Zusammenfassung auch nicht.
+    if (!mail.job_id && !mail.client_id) {
+      return res.json({ ok: true, summary: null, note: "kein_bezug" });
     }
 
-    const result = await detectMilestones(mail);
-    return res.json({ ok: true, suggested: result.suggested });
+    const result = await summarizeMail(mail);
+    return res.json({ ok: true, summary: result.summary });
   } catch (e) {
     return res.status(500).json({ error: e?.message ?? String(e) });
   }
@@ -2862,9 +2694,6 @@ app.post("/link-mail-to-job", async (req, res) => {
       return res.status(500).json({ error: updateErr.message });
     }
 
-    if (detectedTools.includes("booking")) {
-      await setMilestone(userData.user.id, job_id, "booking_accepted");
-    }
 
     // Mail message mit client_id und job_id verknüpfen
     if (existingAction.mail_message_id) {
