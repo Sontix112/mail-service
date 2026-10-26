@@ -2449,6 +2449,7 @@ app.post("/ai-compose-new", async (req, res) => {
     const {
       jwt, client_id, job_id,
       ai_hint, current_subject, current_body, mode,
+      active_chips, mail_parts,
     } = req.body || {};
     if (!jwt) return res.status(400).json({ error: "jwt required" });
 
@@ -2469,8 +2470,11 @@ app.post("/ai-compose-new", async (req, res) => {
     const hinweis = (ai_hint ?? "").trim();
     const bestehenderText = (current_body ?? "").trim();
 
-    if (!istUeberarbeiten && !hinweis) {
-      return res.status(400).json({ error: "ai_hint required" });
+    const chipKeys = (typeof active_chips === "string" ? active_chips : "")
+      .split(",").map((s) => s.trim()).filter(Boolean);
+
+    if (!istUeberarbeiten && !hinweis && chipKeys.length === 0) {
+      return res.status(400).json({ error: "ai_hint oder active_chips noetig" });
     }
     if (istUeberarbeiten && !bestehenderText) {
       return res.status(400).json({ error: "current_body required for rewrite" });
@@ -2558,23 +2562,65 @@ app.post("/ai-compose-new", async (req, res) => {
       !betreffAktuell || betreffAktuell.toLowerCase() === "neue mail";
 
     // ── Auftrag an das Modell ───────────────────────────────────────────────
+    // ── Bausteine ───────────────────────────────────────────────────────────
+    // Was der Nutzer ueber die Chips ausgewaehlt hat. Die Anweisung je Chip
+    // steht in mail_occasions, damit sie dort gepflegt werden kann statt hier.
+    // Die konkreten Werte (Zeitfenster, Angebote ...) liefert mail_parts.
+    let bausteinBlock = "";
+    if (chipKeys.length) {
+      const { data: chips } = await supabaseAdmin
+        .from("mail_occasions")
+        .select("key, label, ai_instruction")
+        .in("key", chipKeys);
+
+      const werteJeChip = new Map();
+      for (const p of Array.isArray(mail_parts) ? mail_parts : []) {
+        if (p?.chip && Array.isArray(p.werte) && p.werte.length) {
+          werteJeChip.set(p.chip, p.werte.join(", "));
+        }
+      }
+
+      bausteinBlock = chipKeys
+        .map((k) => {
+          const c = (chips ?? []).find((x) => x.key === k);
+          const name = c?.label ?? k;
+          const anweisung = c?.ai_instruction ? ` ${c.ai_instruction.trim()}` : "";
+          const werte = werteJeChip.has(k)
+            ? `\n  Konkrete Daten dazu: ${werteJeChip.get(k)}`
+            : "";
+          return `- ${name}:${anweisung}${werte}`;
+        })
+        .join("\n");
+    }
+
     const aufgabe = istUeberarbeiten
-      ? `Ueberarbeite den folgenden, bereits verfassten Mailtext.
+      ? `Der folgende Mailtext stammt vom Nutzer. Er hat ihn nach dem Erzeugen
+von Hand bearbeitet - diese Bearbeitung ist Absicht und darf nicht verloren gehen.
 
 BISHERIGER TEXT:
 ${bestehenderText}
 
-${hinweis
-  ? `AENDERUNGSWUNSCH DES NUTZERS:\n${hinweis}`
-  : "Der Nutzer hat keinen besonderen Wunsch genannt. Verbessere Formulierung, Rechtschreibung und Aufbau, ohne den Inhalt zu veraendern."}
+${(bausteinBlock || hinweis)
+  ? `DAS SOLL JETZT IN DER MAIL STEHEN:
+${[bausteinBlock, hinweis ? `- Zusaetzlich vom Nutzer: ${hinweis}` : ""].filter(Boolean).join("\n")}
 
-Behalte alle inhaltlichen Aussagen, Zahlen und Termine des bisherigen Textes bei,
-solange der Aenderungswunsch nichts anderes verlangt. Fuege nichts hinzu.`
+SO GEHST DU VOR:
+- Du schreibst die Mail NICHT neu. Formulierungen, Aufbau und Tonfall des
+  bisherigen Textes bleiben erhalten, Satz fuer Satz.
+- Fehlt einer der oben genannten Punkte im Text, ergaenze ihn an der Stelle,
+  an die er sachlich gehoert.
+- Steht ein Punkt schon drin, aber mit anderen Daten, Zahlen oder Terminen,
+  aktualisiere genau diese Angaben und sonst nichts.
+- Wurde ein Punkt frueher erwaehnt und steht jetzt nicht mehr oben, nimm ihn
+  heraus.
+- Jeder Satz, der von keinem dieser Punkte beruehrt wird, bleibt unveraendert.`
+  : `Der Nutzer hat keinen Wunsch genannt. Verbessere nur Rechtschreibung,
+Grammatik und Satzbau. Inhalt, Aussagen und Aufbau bleiben unveraendert.`}`
       : `Schreibe eine neue E-Mail an den Kunden. Das ist KEINE Antwort auf eine
 eingegangene Mail, sondern eine Mail, die der Nutzer von sich aus schickt.
 
 WAS IN DIE MAIL SOLL:
-${hinweis}`;
+${[bausteinBlock, hinweis].filter(Boolean).join("\n")}`;
 
     const heute = new Date().toISOString().split("T")[0];
     const kontext = [kundenBlock, jobBlock].filter(Boolean).join("\n\n");
