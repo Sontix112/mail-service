@@ -1249,7 +1249,35 @@ Antworte mit exakt diesem JSON-Format (nur Felder die tatsächlich vorhanden sin
 
 
 
-return res.json({ ok: true, synced: totalSynced });
+    // Nachlauf: Mails ohne Kurzfassung nachholen. Eingehende bekommen sie
+    // schon aus der Tool-Erkennung, ausgehende laufen durch keine Analyse -
+    // und ein Aufruf aus der App heraus muesste in jeder Versandkette
+    // einzeln stehen und wuerde beim naechsten Weg wieder vergessen.
+    // Was hier liegenbleibt, wird beim naechsten Lauf nachgeholt.
+    let nachgefasst = 0;
+    try {
+      const grenze = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: offeneMails } = await supabaseAdmin
+        .from("mail_messages")
+        .select("id, user_id, job_id, client_id, direction, subject, body_text")
+        .is("summary", null)
+        .gte("created_at", grenze)
+        .or("job_id.not.is.null,client_id.not.is.null")
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      for (const m of offeneMails ?? []) {
+        const r = await summarizeMail(m);
+        if (r?.summary) nachgefasst++;
+      }
+      if (nachgefasst > 0) {
+        console.log(`Kurzfassungen nachgetragen: ${nachgefasst}`);
+      }
+    } catch (e) {
+      console.error("Kurzfassungs-Nachlauf fehlgeschlagen:", e.message);
+    }
+
+return res.json({ ok: true, synced: totalSynced, summarized: nachgefasst });
   } catch (e) {
     return res.status(500).json({ error: e?.message ?? String(e) });
   } finally {
