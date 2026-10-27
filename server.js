@@ -1677,6 +1677,10 @@ app.post("/send-mail", async (req, res) => {
       });
     }
 
+    // Ohne Zeitgrenzen wartet nodemailer bis zu zehn Minuten auf den
+    // SMTP-Server. Haengt der nach der Uebergabe (manche Anbieter bremsen
+    // bei mehreren Mails in Folge), ist die Mail zwar zugestellt, aber die
+    // App bekommt keine Antwort und kann den Versand nicht protokollieren.
     const transporter = nodemailer.createTransport({
       host: account.smtp_host,
       port: account.smtp_port,
@@ -1685,6 +1689,9 @@ app.post("/send-mail", async (req, res) => {
         user: account.username,
         pass: password,
       },
+      connectionTimeout: 15000,
+      greetingTimeout: 10000,
+      socketTimeout: 30000,
     });
 
     // ── Festgesetzte Rechnung anhaengen ──────────────────────────────────
@@ -1731,15 +1738,38 @@ app.post("/send-mail", async (req, res) => {
       }
     }
 
-    const info = await transporter.sendMail({
-      from: account.email
-        ? `${account.display_name || ""} <${account.email}>`
-        : account.username,
-      to,
-      subject,
-      text: body,
-      ...(attachments.length ? { attachments } : {}),
-    });
+    const begonnen = Date.now();
+    let info;
+    try {
+      info = await transporter.sendMail({
+        from: account.email
+          ? `${account.display_name || ""} <${account.email}>`
+          : account.username,
+        to,
+        subject,
+        text: body,
+        ...(attachments.length ? { attachments } : {}),
+      });
+    } catch (e) {
+      console.error(
+        `send-mail: SMTP fehlgeschlagen nach ${Date.now() - begonnen}ms`,
+        `(${account.smtp_host}:${account.smtp_port}):`,
+        e?.message ?? String(e)
+      );
+      return res.status(502).json({
+        error: "smtp_failed",
+        detail: e?.message ?? String(e),
+      });
+    } finally {
+      // Verbindung nicht offen liegen lassen: ein haengendes QUIT haelt sonst
+      // den Prozess und die naechste Anfrage auf.
+      try { transporter.close(); } catch {}
+    }
+
+    console.log(
+      `send-mail: an ${to} ueber ${account.smtp_host} in`,
+      `${Date.now() - begonnen}ms, messageId ${info?.messageId ?? "(keine)"}`
+    );
 
     return res.json({
       ok: true,
