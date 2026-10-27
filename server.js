@@ -2726,6 +2726,28 @@ app.post("/ai-compose-new", async (req, res) => {
       // Rueckfall fuer die Preisliste: ist der Chip gesetzt, kam aber kein
       // Text mit, liest der Server sie selbst aus den Einstellungen. Ohne das
       // denkt sich das Modell eine Preisliste aus - schlimmer als gar keine.
+      // Der Gespraechslink steht in den Einstellungen. Die App schickt ihn
+      // nur mit, wenn der Nutzer ihn im Werkzeug geaendert hat - sonst
+      // ergaenzt ihn der Server, damit der Kunde weiss, wo das Gespraech
+      // stattfindet.
+      if (chipKeys.includes("appointment_suggestion")) {
+        const schonDa = (werteJeChip.get("appointment_suggestion") ?? "");
+        if (!schonDa.includes("http")) {
+          const { data: eins } = await supabaseAdmin
+            .from("user_settings")
+            .select("link")
+            .eq("user_id", user_id)
+            .maybeSingle();
+          if ((eins?.link ?? "").trim()) {
+            werteJeChip.set(
+              "appointment_suggestion",
+              `${schonDa ? `${schonDa} | ` : ""}Gespraechslink: ${String(eins.link).trim()}`
+            );
+            console.log("ai-compose-new: Gespraechslink aus den Einstellungen ergaenzt");
+          }
+        }
+      }
+
       if (chipKeys.includes("price_list") && !werteJeChip.has("price_list")) {
         const { data: pl } = await supabaseAdmin
           .from("price_list_for_tool_view")
