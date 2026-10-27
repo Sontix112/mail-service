@@ -2449,7 +2449,7 @@ app.post("/ai-compose-new", async (req, res) => {
     const {
       jwt, client_id, job_id,
       ai_hint, current_subject, current_body, mode,
-      active_chips, mail_parts: mailPartsRoh,
+      active_chips, mail_parts: mailPartsRoh, price_list_text,
     } = req.body || {};
     if (!jwt) return res.status(400).json({ error: "jwt required" });
 
@@ -2631,6 +2631,14 @@ app.post("/ai-compose-new", async (req, res) => {
 
           if (texte.length) werteJeChip.set(p.chip, texte.join(" || "));
         }
+      }
+
+      // Die Preisliste kommt als eigener Parameter, nicht in mail_parts: so
+      // muss die App keinen JSON-Text mit Umbruechen und Anfuehrungszeichen
+      // zusammensetzen. Der Nutzer kann den Text im Werkzeug aendern, deshalb
+      // zaehlt das Feld und nicht die gespeicherte Fassung.
+      if (!werteJeChip.has("price_list") && (price_list_text ?? "").trim()) {
+        werteJeChip.set("price_list", String(price_list_text).trim());
       }
 
       bausteinBlock = chipKeys
