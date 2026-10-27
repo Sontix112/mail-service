@@ -2455,15 +2455,23 @@ app.post("/ai-compose-new", async (req, res) => {
 
     // FlutterFlow schickt mail_parts als JSON-Text, andere Aufrufer als Array.
     // Beides wird hier auf ein Array gebracht, damit es unten einerlei ist.
+    // Je nach Aufrufer kommt das als Array, als JSON-Text oder - wenn der
+    // Client den Wert zusaetzlich maskiert - als JSON-Text im JSON-Text.
+    // Deshalb wird so lange ausgepackt, bis ein Array dasteht.
     let mail_parts = mailPartsRoh;
-    if (typeof mail_parts === "string") {
+    for (let i = 0; i < 3 && typeof mail_parts === "string"; i++) {
       try {
         mail_parts = JSON.parse(mail_parts || "[]");
       } catch {
-        console.warn("ai-compose-new: mail_parts ist kein gueltiges JSON");
+        console.warn("ai-compose-new: mail_parts ist kein gueltiges JSON:",
+                     String(mailPartsRoh).slice(0, 300));
         mail_parts = [];
+        break;
       }
     }
+    if (!Array.isArray(mail_parts)) mail_parts = [];
+    console.log("ai-compose-new: mail_parts Chips =",
+                mail_parts.map((p) => p?.chip).filter(Boolean).join(",") || "(keine)");
 
     // Wie in den uebrigen Endpunkten: der Nutzer kommt aus dem Token, nicht
     // aus dem Body. Sonst koennte der Client eine fremde user_id schicken.
@@ -2641,6 +2649,21 @@ app.post("/ai-compose-new", async (req, res) => {
         werteJeChip.set("price_list", String(price_list_text).trim());
       }
 
+      // Rueckfall fuer die Preisliste: ist der Chip gesetzt, kam aber kein
+      // Text mit, liest der Server sie selbst aus den Einstellungen. Ohne das
+      // denkt sich das Modell eine Preisliste aus - schlimmer als gar keine.
+      if (chipKeys.includes("price_list") && !werteJeChip.has("price_list")) {
+        const { data: pl } = await supabaseAdmin
+          .from("price_list_for_tool_view")
+          .select("inhalt")
+          .eq("user_id", user_id)
+          .maybeSingle();
+        if ((pl?.inhalt ?? "").trim()) {
+          werteJeChip.set("price_list", String(pl.inhalt).trim());
+          console.log("ai-compose-new: Preisliste aus den Einstellungen ergaenzt");
+        }
+      }
+
       bausteinBlock = chipKeys
         .map((k) => {
           const c = (chips ?? []).find((x) => x.key === k);
@@ -2648,7 +2671,8 @@ app.post("/ai-compose-new", async (req, res) => {
           const anweisung = c?.ai_instruction ? ` ${c.ai_instruction.trim()}` : "";
           const werte = werteJeChip.has(k)
             ? `\n  Konkrete Daten dazu: ${werteJeChip.get(k)}`
-            : "";
+            : "\n  Dazu liegen keine Daten vor. Erfinde nichts und nenne keine" +
+              " Zahlen, Preise oder Termine, die nicht oben stehen.";
           return `- ${name}:${anweisung}${werte}`;
         })
         .join("\n");
