@@ -2641,6 +2641,50 @@ app.post("/ai-compose-new", async (req, res) => {
         }
       }
 
+      // Dritte Form: Terminvorschlaege kommen als rohe Zeitpunkte. Lesbaren
+      // Text baut der Server, damit die App keine Datumsformate zusammen-
+      // setzen muss und Mail, Protokoll und Kalender dieselben Werte sehen.
+      const WOCHENTAGE = [
+        "Sonntag", "Montag", "Dienstag", "Mittwoch",
+        "Donnerstag", "Freitag", "Samstag",
+      ];
+      const isoTeile = (wert) => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(String(wert ?? ""));
+        if (!m) return null;
+        return {
+          jahr: Number(m[1]), monat: Number(m[2]), tag: Number(m[3]),
+          std: m[4] ?? null, min: m[5] ?? null,
+        };
+      };
+      const terminText = (slot) => {
+        const d = isoTeile(slot?.datum);
+        if (!d) return null;
+        const wt = WOCHENTAGE[new Date(Date.UTC(d.jahr, d.monat - 1, d.tag)).getUTCDay()];
+        const datum = `${wt}, ${String(d.tag).padStart(2, "0")}.`
+          + `${String(d.monat).padStart(2, "0")}.${d.jahr}`;
+        const von = isoTeile(slot?.von);
+        const bis = isoTeile(slot?.bis);
+        if (!von?.std) return datum;
+        if (bis?.std) return `${datum} ${von.std}:${von.min} bis ${bis.std}:${bis.min} Uhr`;
+        return `${datum} ab ${von.std}:${von.min} Uhr`;
+      };
+
+      for (const p of Array.isArray(mail_parts) ? mail_parts : []) {
+        if (!p?.chip || werteJeChip.has(p.chip)) continue;
+        const teile = [];
+        if (Array.isArray(p.slots) && p.slots.length) {
+          const texte = p.slots.map(terminText).filter(Boolean);
+          if (texte.length) teile.push(`Zeitfenster: ${texte.join(" || ")}`);
+        }
+        if ((p.zweck ?? "").toString().trim()) {
+          teile.push(`Anlass: ${String(p.zweck).trim()}`);
+        }
+        if ((p.link ?? "").toString().trim()) {
+          teile.push(`Buchungslink: ${String(p.link).trim()}`);
+        }
+        if (teile.length) werteJeChip.set(p.chip, teile.join(" | "));
+      }
+
       // Die Preisliste kommt als eigener Parameter, nicht in mail_parts: so
       // muss die App keinen JSON-Text mit Umbruechen und Anfuehrungszeichen
       // zusammensetzen. Der Nutzer kann den Text im Werkzeug aendern, deshalb
