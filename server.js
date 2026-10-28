@@ -2697,6 +2697,29 @@ app.post("/ai-compose-new", async (req, res) => {
         if (texte.length) werteJeChip.set(p.chip, texte.join(" || "));
       }
 
+      // Rechnung: die App schickt die ID, den lesbaren Text holt der Server.
+      // So steht in der Mail immer der Stand, den die Rechnung gerade hat.
+      for (const p of Array.isArray(mail_parts) ? mail_parts : []) {
+        if (p?.chip !== "invoice") continue;
+        if (werteJeChip.has(p.chip)) continue;
+        if (!Array.isArray(p.ids) || !p.ids.length) continue;
+
+        const { data: rechnungen } = await supabaseAdmin
+          .from("invoices_for_tool_view")
+          .select("anzeige, status_text, anhaengbar")
+          .in("id", p.ids);
+
+        const texte = (rechnungen ?? []).map((r) => {
+          const kopf = String(r?.anzeige ?? "").trim();
+          if (!kopf) return null;
+          return r?.anhaengbar
+            ? `${kopf} (liegt dieser Mail als PDF bei)`
+            : `${kopf} - Achtung: ${r?.status_text ?? "Entwurf"}, haengt dieser Mail NICHT an`;
+        }).filter(Boolean);
+
+        if (texte.length) werteJeChip.set(p.chip, texte.join(" || "));
+      }
+
       // Terminaenderung: die App schickt die ID des betroffenen Termins,
       // den lesbaren Text holt der Server. So steht in der Mail immer der
       // Stand, den der Kalender gerade hat.
