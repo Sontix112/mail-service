@@ -2671,6 +2671,32 @@ app.post("/ai-compose-new", async (req, res) => {
         }
       }
 
+      // Rechnung: die App schickt die ID, Nummer und Betrag holt der Server.
+      // So steht in der Mail der Stand der Rechnung und keine Zahl, die die
+      // App einmal gesehen hat.
+      for (const p of Array.isArray(mail_parts) ? mail_parts : []) {
+        if (p?.chip !== "invoice") continue;
+        if (werteJeChip.has(p.chip)) continue;
+        if (!Array.isArray(p.ids) || !p.ids.length) continue;
+
+        const { data: rechnungen } = await supabaseAdmin
+          .from("invoices_for_tool_view")
+          .select("invoice_number, typ_text, total_gross, status_text, anhaengbar")
+          .in("id", p.ids);
+
+        const texte = (rechnungen ?? []).map((r) => {
+          const teile = [r.typ_text ?? "Rechnung"];
+          if (r.invoice_number) teile.push(`Nummer ${r.invoice_number}`);
+          if (r.total_gross != null) teile.push(`Betrag ${euro(r.total_gross)}`);
+          teile.push(r.anhaengbar
+            ? "liegt dieser Mail als PDF bei"
+            : "ist noch ein Entwurf und haengt dieser Mail NICHT an");
+          return teile.join(", ");
+        });
+
+        if (texte.length) werteJeChip.set(p.chip, texte.join(" || "));
+      }
+
       // Terminaenderung: die App schickt die ID des betroffenen Termins,
       // den lesbaren Text holt der Server. So steht in der Mail immer der
       // Stand, den der Kalender gerade hat.
