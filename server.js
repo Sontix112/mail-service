@@ -2726,6 +2726,24 @@ app.post("/ai-compose-new", async (req, res) => {
       // Rueckfall fuer die Preisliste: ist der Chip gesetzt, kam aber kein
       // Text mit, liest der Server sie selbst aus den Einstellungen. Ohne das
       // denkt sich das Modell eine Preisliste aus - schlimmer als gar keine.
+      // Der Anlass kommt als eigener Eintrag, nicht im Terminvorschlag
+      // selbst: so koennen Zeiten und Anlass unabhaengig voneinander
+      // geaendert werden, ohne sich gegenseitig zu ueberschreiben.
+      if (chipKeys.includes("appointment_suggestion")) {
+        const zweckEintrag = (Array.isArray(mail_parts) ? mail_parts : [])
+          .find((p) => p?.chip === "appointment_purpose");
+        const zweck = Array.isArray(zweckEintrag?.werte)
+          ? String(zweckEintrag.werte[0] ?? "").trim()
+          : "";
+        if (zweck) {
+          const schonDa = werteJeChip.get("appointment_suggestion") ?? "";
+          werteJeChip.set(
+            "appointment_suggestion",
+            `${schonDa ? `${schonDa} | ` : ""}Anlass: ${zweck}`
+          );
+        }
+      }
+
       // Der Gespraechslink steht in den Einstellungen. Die App schickt ihn
       // nur mit, wenn der Nutzer ihn im Werkzeug geaendert hat - sonst
       // ergaenzt ihn der Server, damit der Kunde weiss, wo das Gespraech
