@@ -2710,7 +2710,7 @@ app.post("/ai-compose-new", async (req, res) => {
           teile.push(`Anlass: ${String(p.zweck).trim()}`);
         }
         if ((p.link ?? "").toString().trim()) {
-          teile.push(`Buchungslink: ${String(p.link).trim()}`);
+          teile.push(`Gespraechslink fuer das Videogespraech: ${String(p.link).trim()}`);
         }
         if (teile.length) werteJeChip.set(p.chip, teile.join(" | "));
       }
@@ -2759,7 +2759,7 @@ app.post("/ai-compose-new", async (req, res) => {
           if ((eins?.link ?? "").trim()) {
             werteJeChip.set(
               "appointment_suggestion",
-              `${schonDa ? `${schonDa} | ` : ""}Gespraechslink: ${String(eins.link).trim()}`
+              `${schonDa ? `${schonDa} | ` : ""}Gespraechslink fuer das Videogespraech: ${String(eins.link).trim()}`
             );
             console.log("ai-compose-new: Gespraechslink aus den Einstellungen ergaenzt");
           }
