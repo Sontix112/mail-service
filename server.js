@@ -2671,6 +2671,27 @@ app.post("/ai-compose-new", async (req, res) => {
         }
       }
 
+      // Terminaenderung: die App schickt die ID des betroffenen Termins,
+      // den lesbaren Text holt der Server. So steht in der Mail immer der
+      // Stand, den der Kalender gerade hat.
+      for (const p of Array.isArray(mail_parts) ? mail_parts : []) {
+        if (p?.chip !== "appointment_change") continue;
+        if (werteJeChip.has(p.chip)) continue;
+        if (!Array.isArray(p.ids) || !p.ids.length) continue;
+
+        const { data: termine } = await supabaseAdmin
+          .from("appointments_for_change_view")
+          .select("anzeige")
+          .in("id", p.ids);
+
+        const texte = (termine ?? [])
+          .map((t) => String(t?.anzeige ?? "").trim())
+          .filter(Boolean);
+        if (texte.length) {
+          werteJeChip.set(p.chip, `Bisheriger Termin: ${texte.join(" || ")}`);
+        }
+      }
+
       // Dritte Form: Terminvorschlaege kommen als rohe Zeitpunkte. Lesbaren
       // Text baut der Server, damit die App keine Datumsformate zusammen-
       // setzen muss und Mail, Protokoll und Kalender dieselben Werte sehen.
