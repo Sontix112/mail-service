@@ -2731,7 +2731,7 @@ app.post("/ai-compose-new", async (req, res) => {
           teile.push(`Anlass: ${String(p.zweck).trim()}`);
         }
         if ((p.link ?? "").toString().trim()) {
-          teile.push(`Gespraechslink fuer das Videogespraech: ${String(p.link).trim()}`);
+          teile.push(`Ort oder Zugang zum Termin: ${String(p.link).trim()}`);
         }
         if (teile.length) werteJeChip.set(p.chip, teile.join(" | "));
       }
@@ -2776,7 +2776,7 @@ app.post("/ai-compose-new", async (req, res) => {
         // weil das Gespraech vor Ort stattfindet. Nur wenn es gar keinen
         // Eintrag gibt, ergaenzt der Server den Link aus den Einstellungen.
         const linkEintrag = (Array.isArray(mail_parts) ? mail_parts : [])
-          .find((p) => p?.chip === "appointment_link");
+          .find((p) => p?.chip === "appointment_location" || p?.chip === "appointment_link");
 
         let link = null;
         if (linkEintrag) {
@@ -2784,7 +2784,7 @@ app.post("/ai-compose-new", async (req, res) => {
             ? String(linkEintrag.werte[0] ?? "").trim()
             : "";
           link = eigen || null;
-          if (!eigen) console.log("ai-compose-new: Linkfeld leer - kein Gespraechslink");
+          if (!eigen) console.log("ai-compose-new: Ortsfeld leer - kein Ort und kein Zugang");
         } else {
           const { data: eins } = await supabaseAdmin
             .from("user_settings")
@@ -2798,7 +2798,8 @@ app.post("/ai-compose-new", async (req, res) => {
         if (link && !schonDa.includes(link)) {
           werteJeChip.set(
             "appointment_suggestion",
-            `${schonDa ? `${schonDa} | ` : ""}Gespraechslink fuer das Videogespraech: ${link}`
+            `${schonDa ? `${schonDa} | ` : ""}Ort oder Zugang zum Termin`
+              + ` (vom Nutzer eingetragen, kann eine Adresse oder ein Link sein): ${link}`
           );
         }
       }
