@@ -2771,19 +2771,35 @@ app.post("/ai-compose-new", async (req, res) => {
       // stattfindet.
       if (chipKeys.includes("appointment_suggestion")) {
         const schonDa = (werteJeChip.get("appointment_suggestion") ?? "");
-        if (!schonDa.includes("http")) {
+        // Hat der Nutzer das Linkfeld angefasst, zaehlt sein Feldinhalt - auch
+        // ein leeres Feld. Das heisst dann ausdruecklich "kein Link", etwa
+        // weil das Gespraech vor Ort stattfindet. Nur wenn es gar keinen
+        // Eintrag gibt, ergaenzt der Server den Link aus den Einstellungen.
+        const linkEintrag = (Array.isArray(mail_parts) ? mail_parts : [])
+          .find((p) => p?.chip === "appointment_link");
+
+        let link = null;
+        if (linkEintrag) {
+          const eigen = Array.isArray(linkEintrag.werte)
+            ? String(linkEintrag.werte[0] ?? "").trim()
+            : "";
+          link = eigen || null;
+          if (!eigen) console.log("ai-compose-new: Linkfeld leer - kein Gespraechslink");
+        } else {
           const { data: eins } = await supabaseAdmin
             .from("user_settings")
             .select("link")
             .eq("user_id", user_id)
             .maybeSingle();
-          if ((eins?.link ?? "").trim()) {
-            werteJeChip.set(
-              "appointment_suggestion",
-              `${schonDa ? `${schonDa} | ` : ""}Gespraechslink fuer das Videogespraech: ${String(eins.link).trim()}`
-            );
-            console.log("ai-compose-new: Gespraechslink aus den Einstellungen ergaenzt");
-          }
+          link = (eins?.link ?? "").trim() || null;
+          if (link) console.log("ai-compose-new: Gespraechslink aus den Einstellungen ergaenzt");
+        }
+
+        if (link && !schonDa.includes(link)) {
+          werteJeChip.set(
+            "appointment_suggestion",
+            `${schonDa ? `${schonDa} | ` : ""}Gespraechslink fuer das Videogespraech: ${link}`
+          );
         }
       }
 
