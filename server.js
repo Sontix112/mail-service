@@ -14,7 +14,11 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
+// 100 kb (die Vorgabe von express.json) reicht nicht: eine einzelne
+// HTML-Mail im Verlauf sprengt das schon, und der Request scheitert dann
+// still mit 413, bevor eine Route ihn sieht.
 app.use(express.json({
+  limit: "10mb",
   strict: false,
   verify: (req, res, buf) => {
     try {
@@ -29,6 +33,20 @@ app.use((err, req, res, next) => {
   if (err.type === 'entity.parse.failed') {
     console.log("JSON parse error on:", req.path, err.message);
     return res.status(400).json({ error: "Invalid JSON body" });
+  }
+  // Ein zu grosser Body kam bisher als nackter 413 zurueck - ohne Pfad im
+  // Log und ohne verwertbare Antwort fuer die App. Beides steht jetzt da.
+  if (err.type === 'entity.too.large') {
+    console.error(
+      `Body zu gross auf ${req.method} ${req.path}:`,
+      `${err.length ?? "?"} Bytes, erlaubt sind ${err.limit ?? "?"}`
+    );
+    return res.status(413).json({
+      error: "payload_too_large",
+      path: req.path,
+      bytes: err.length ?? null,
+      limit: err.limit ?? null,
+    });
   }
   next(err);
 });
