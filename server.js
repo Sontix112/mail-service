@@ -1640,6 +1640,19 @@ app.post("/delete-mail-account", async (req, res) => {
   }
 });
 app.post("/send-mail", async (req, res) => {
+  // Haelt fest, ob der Client die Verbindung schon vor der Antwort aufgibt.
+  // Genau das sieht in der App wie "nichts passiert" aus: die Mail geht raus,
+  // der Erfolg kommt aber nie an, also wird auch nichts protokolliert.
+  const angefragt = Date.now();
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      console.error(
+        `send-mail: Client hat die Verbindung nach ${Date.now() - angefragt}ms`,
+        "abgebrochen, bevor die Antwort draussen war"
+      );
+    }
+  });
+
   try {
     const { jwt, mail_account_id, to, subject, body, job_id, invoice_id } =
       req.body || {};
