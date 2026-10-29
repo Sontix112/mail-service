@@ -1738,12 +1738,27 @@ app.post("/send-mail", async (req, res) => {
     // akzeptiert, sonst liesse sich beliebiges aus dem Storage holen.
     const attachments = [];
 
-    if (job_id && invoice_id) {
+    // Leere Zeichenketten sind keine IDs: ein "" aus einem nicht gesetzten
+    // Dropdown ergaebe eine ungueltige UUID-Abfrage, und der Anhang fiele
+    // still aus. Lieber vorher sauber pruefen.
+    const istUuid = (v) =>
+      typeof v === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        .test(v.trim());
+
+    if (invoice_id && !istUuid(invoice_id)) {
+      console.error(`send-mail: invoice_id ist keine UUID: "${invoice_id}"`);
+    }
+    if (job_id && !istUuid(job_id)) {
+      console.error(`send-mail: job_id ist keine UUID: "${job_id}"`);
+    }
+
+    if (istUuid(job_id) && istUuid(invoice_id)) {
       const { data: rechnung } = await supabaseAdmin
         .from("invoices")
         .select("id, invoice_number, pdf_path, status, user_id")
-        .eq("id", invoice_id)
-        .eq("job_id", job_id)
+        .eq("id", invoice_id.trim())
+        .eq("job_id", job_id.trim())
         .eq("user_id", userId)
         .neq("status", "draft")
         .not("pdf_path", "is", null)
