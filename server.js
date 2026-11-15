@@ -873,6 +873,21 @@ ${cleanInput.slice(0, 3000)}`;
               for (const mail of insertedMails) {
                 if (mail.in_reply_to_message_id) continue;
 
+                // Von einer eigenen Adresse kommt nie eine neue Anfrage. Das gilt
+                // auch dann, wenn der Text wie eine aussieht - etwa bei einer
+                // Benachrichtigung, die den Wortlaut einer Anfrage zitiert.
+                const vonMirSelbst = (accounts ?? []).some(
+                  (a) =>
+                    a.user_id === mail.user_id &&
+                    normalizeEmail(a.email) === normalizeEmail(mail.from_email)
+                );
+                if (vonMirSelbst) {
+                  console.log(
+                    `Dritter Loop: ${mail.from_email} ist ein eigenes Konto, keine unknown_sender action`
+                  );
+                  continue;
+                }
+
                 const { clientId: knownClientId } = await findClientForMail(mail);
                 if (knownClientId) continue;
 
