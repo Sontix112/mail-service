@@ -1840,50 +1840,67 @@ app.post("/send-mail", async (req, res) => {
     if (contract_id && !istUuid(contract_id)) {
       console.error(`send-mail: contract_id ist keine UUID: "${contract_id}"`);
     }
+    // Ab hier ist die Mail schon raus. Was jetzt noch schiefgeht, darf den
+    // Versand nicht als gescheitert melden: der Nutzer wuerde es sonst erneut
+    // versuchen und die Mail ginge zweimal raus. Der Grund landet im Log und
+    // in portal.error.
     if (istUuid(job_id) && istUuid(contract_id)) {
-      const { data: vertrag } = await supabaseAdmin
-        .from("contracts")
-        .select("id, sent_at")
-        .eq("id", contract_id.trim())
-        .eq("job_id", job_id.trim())
-        .eq("user_id", userId)
-        .maybeSingle();
+      try {
+        const { data: vertrag } = await supabaseAdmin
+          .from("contracts")
+          .select("id, sent_at")
+          .eq("id", contract_id.trim())
+          .eq("job_id", job_id.trim())
+          .eq("user_id", userId)
+          .maybeSingle();
 
-      if (!vertrag) {
-        console.error(
-          `send-mail: Vertrag ${contract_id} gehoert nicht zu Job ${job_id}`
-        );
-      } else {
-        // sent_at ist ein Ereignis, kein Zustand: ein zweiter Versand
-        // verschiebt es nicht. Der Trigger haelt es ohnehin fest.
-        if (!vertrag.sent_at) {
-          await supabaseAdmin
-            .from("contracts")
-            .update({ status: "sent", sent_at: new Date().toISOString() })
-            .eq("id", vertrag.id);
-        }
-
-        // reuse: einen Zugang, den der Kunde schon hat, nicht entwerten.
-        const ergebnis = await portalEinladen({
-          userId,
-          jobId: job_id.trim(),
-          sendMail: true,
-          reuse: true,
-          req,
-        });
-
-        if (!ergebnis.ok) {
+        if (!vertrag) {
           console.error(
-            "send-mail: Portaleinladung fehlgeschlagen:",
-            ergebnis.error
+            `send-mail: Vertrag ${contract_id} gehoert nicht zu Job ${job_id}`
           );
-        }
+        } else {
+          // sent_at ist ein Ereignis, kein Zustand: ein zweiter Versand
+          // verschiebt es nicht. Der Trigger haelt es ohnehin fest.
+          if (!vertrag.sent_at) {
+            await supabaseAdmin
+              .from("contracts")
+              .update({ status: "sent", sent_at: new Date().toISOString() })
+              .eq("id", vertrag.id);
+          }
 
+          // reuse: einen Zugang, den der Kunde schon hat, nicht entwerten.
+          const ergebnis = await portalEinladen({
+            userId,
+            jobId: job_id.trim(),
+            sendMail: true,
+            reuse: true,
+            req,
+          });
+
+          if (!ergebnis.ok) {
+            console.error(
+              "send-mail: Portaleinladung fehlgeschlagen:",
+              ergebnis.error
+            );
+          }
+
+          portal = {
+            ok: ergebnis.ok === true,
+            existing: ergebnis.existing === true,
+            mail_sent: ergebnis.mail_sent === true,
+            error: ergebnis.error ?? null,
+          };
+        }
+      } catch (e) {
+        console.error(
+          "send-mail: Vertrag/Portal nach dem Versand fehlgeschlagen:",
+          e?.stack ?? e?.message ?? String(e)
+        );
         portal = {
-          ok: ergebnis.ok === true,
-          existing: ergebnis.existing === true,
-          mail_sent: ergebnis.mail_sent === true,
-          error: ergebnis.error ?? null,
+          ok: false,
+          existing: false,
+          mail_sent: false,
+          error: e?.message ?? String(e),
         };
       }
     }
