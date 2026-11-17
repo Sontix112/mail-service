@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser';
 import { supabaseAdmin, supabaseAsUser } from "./lib/supabase.js";
 import { emailDomain, normalizeEmail } from "./lib/util.js";
 import { decryptPassword, encryptPassword } from "./lib/crypto.js";
-import { portalRouter } from "./routes/portal.js";
+import { portalRouter, portalEinladen } from "./routes/portal.js";
 
 dotenv.config();
 
@@ -1669,7 +1669,7 @@ app.post("/send-mail", async (req, res) => {
   });
 
   try {
-    const { jwt, mail_account_id, to, subject, body, job_id, invoice_id } =
+    const { jwt, mail_account_id, to, subject, body, job_id, invoice_id, contract_id } =
       req.body || {};
 
     if (!jwt || !mail_account_id || !to || !subject || !body) {
@@ -1832,10 +1832,67 @@ app.post("/send-mail", async (req, res) => {
       `${Date.now() - begonnen}ms, messageId ${info?.messageId ?? "(keine)"}`
     );
 
+    // ── Vertragsmail: Vertrag als verschickt markieren, Portal einladen ──
+    // Was beim Verschicken einer Vertragsmail passieren muss, steht nur hier.
+    // Der Client sagt ueber contract_id, welcher Vertrag gemeint ist; ob er
+    // dem Nutzer und diesem Job gehoert, prueft der Server selbst.
+    let portal = null;
+    if (contract_id && !istUuid(contract_id)) {
+      console.error(`send-mail: contract_id ist keine UUID: "${contract_id}"`);
+    }
+    if (istUuid(job_id) && istUuid(contract_id)) {
+      const { data: vertrag } = await supabaseAdmin
+        .from("contracts")
+        .select("id, sent_at")
+        .eq("id", contract_id.trim())
+        .eq("job_id", job_id.trim())
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (!vertrag) {
+        console.error(
+          `send-mail: Vertrag ${contract_id} gehoert nicht zu Job ${job_id}`
+        );
+      } else {
+        // sent_at ist ein Ereignis, kein Zustand: ein zweiter Versand
+        // verschiebt es nicht. Der Trigger haelt es ohnehin fest.
+        if (!vertrag.sent_at) {
+          await supabaseAdmin
+            .from("contracts")
+            .update({ status: "sent", sent_at: new Date().toISOString() })
+            .eq("id", vertrag.id);
+        }
+
+        // reuse: einen Zugang, den der Kunde schon hat, nicht entwerten.
+        const ergebnis = await portalEinladen({
+          userId,
+          jobId: job_id.trim(),
+          sendMail: true,
+          reuse: true,
+          req,
+        });
+
+        if (!ergebnis.ok) {
+          console.error(
+            "send-mail: Portaleinladung fehlgeschlagen:",
+            ergebnis.error
+          );
+        }
+
+        portal = {
+          ok: ergebnis.ok === true,
+          existing: ergebnis.existing === true,
+          mail_sent: ergebnis.mail_sent === true,
+          error: ergebnis.error ?? null,
+        };
+      }
+    }
+
     return res.json({
       ok: true,
       messageId: info.messageId,
       attached: attachments.map((a) => a.filename),
+      portal,
     });
   } catch (e) {
     return res.status(500).json({

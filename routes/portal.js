@@ -101,8 +101,8 @@ async function logPortalEvent(userId, accessId, type, req, meta = {}) {
       user_id: userId,
       portal_access_id: accessId,
       type,
-      ip: clientIp(req),
-      user_agent: req.headers["user-agent"] ?? null,
+      ip: req ? clientIp(req) : null,
+      user_agent: req?.headers?.["user-agent"] ?? null,
       meta,
     });
   } catch (e) {
@@ -154,122 +154,119 @@ async function requirePortalSession(req, res, next) {
 }
 
 // ── Zugang anlegen (Inhaber) ─────────────────────────────────────────────────
-portalRouter.post("/portal/invite", async (req, res) => {
-  try {
-    const { jwt, job_id, send_mail, reuse } = req.body || {};
-    if (!jwt || !job_id) {
-      return res.status(400).json({ error: "Missing required fields: jwt, job_id" });
-    }
+// ── Portalzugang ausstellen ──────────────────────────────────────────────────
+// Eine Stelle, zwei Aufrufer: der Endpunkt unten und der Mailversand in
+// server.js. Beim Verschicken einer Vertragsmail soll derselbe Zugang
+// entstehen wie beim Buchungs-Tool, nach denselben Regeln.
+export async function portalEinladen({
+  userId,
+  jobId,
+  sendMail = true,
+  reuse = false,
+  req = null,
+}) {
+  // Mit reuse wird ein bestehender gueltiger Zugang nicht angetastet.
+  // Das ist fuer wiederholbare Ablaeufe gedacht: ein zweiter Durchlauf
+  // soll den Link nicht entwerten, den der Kunde laengst bekommen hat.
+  const wiederverwenden = reuse === true;
 
-    // Mit reuse wird ein bestehender gueltiger Zugang nicht angetastet.
-    // Das ist fuer wiederholbare Ablaeufe gedacht: ein zweiter Durchlauf
-    // soll den Link nicht entwerten, den der Kunde laengst bekommen hat.
-    const wiederverwenden = reuse === true;
+  // Standardmaessig verschickt die Funktion die Einladung selbst. Wird der
+  // Link dagegen in eine Mail eingebaut, die der Nutzer vorher noch prueft,
+  // soll hier nichts rausgehen - dann liefert die Antwort nur den Link.
+  const mailVerschicken = sendMail !== false;
 
-    // Standardmaessig verschickt der Endpunkt die Einladung selbst. Wird der
-    // Link dagegen in eine Mail eingebaut, die der Nutzer vorher noch prueft,
-    // soll hier nichts rausgehen - dann liefert die Antwort nur den Link.
-    const mailVerschicken = send_mail !== false;
+  const { data: job } = await supabaseAdmin
+    .from("jobs")
+    .select("id, user_id, client_id, title")
+    .eq("id", jobId)
+    .maybeSingle();
 
-    const supabaseUser = supabaseAsUser(jwt);
+  if (!job || job.user_id !== userId) {
+    return { ok: false, status: 404, error: "job_not_found" };
+  }
+  if (!job.client_id) {
+    return { ok: false, status: 400, error: "job_without_client" };
+  }
 
-    const { data: userData, error: userErr } = await supabaseUser.auth.getUser();
-    if (userErr || !userData?.user) {
-      return res.status(401).json({ error: "Invalid user" });
-    }
-    const userId = userData.user.id;
+  // Empfängeradresse: client_emails ist die Wahrheit, clients.email nur Anzeige
+  const { data: primary } = await supabaseAdmin
+    .from("client_emails")
+    .select("email")
+    .eq("user_id", userId)
+    .eq("client_id", job.client_id)
+    .order("is_primary", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-    const { data: job } = await supabaseAdmin
-      .from("jobs")
-      .select("id, user_id, client_id, title")
-      .eq("id", job_id)
-      .maybeSingle();
+  const email = normalizeEmail(primary?.email);
+  if (!email) {
+    return { ok: false, status: 400, error: "client_without_email" };
+  }
 
-    if (!job || job.user_id !== userId) {
-      return res.status(404).json({ error: "job_not_found" });
-    }
-    if (!job.client_id) {
-      return res.status(400).json({ error: "job_without_client" });
-    }
-
-    // Empfängeradresse: client_emails ist die Wahrheit, clients.email nur Anzeige
-    const { data: primary } = await supabaseAdmin
-      .from("client_emails")
-      .select("email")
-      .eq("user_id", userId)
-      .eq("client_id", job.client_id)
-      .order("is_primary", { ascending: false })
+  if (wiederverwenden) {
+    // Nur ein bereits ausgelieferter Zugang ist schuetzenswert. Einer, der
+    // noch nie verschickt wurde, darf ersetzt werden - den kennt niemand.
+    const { data: bestehend } = await supabaseAdmin
+      .from("portal_access")
+      .select("id, expires_at")
+      .eq("job_id", job.id)
+      .is("revoked_at", null)
+      .not("delivered_at", "is", null)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    const email = normalizeEmail(primary?.email);
-    if (!email) {
-      return res.status(400).json({ error: "client_without_email" });
-    }
-
-    if (wiederverwenden) {
-      // Nur ein bereits ausgelieferter Zugang ist schuetzenswert. Einer, der
-      // noch nie verschickt wurde, darf ersetzt werden - den kennt niemand.
-      const { data: bestehend } = await supabaseAdmin
-        .from("portal_access")
-        .select("id, expires_at")
-        .eq("job_id", job.id)
-        .is("revoked_at", null)
-        .not("delivered_at", "is", null)
-        .gt("expires_at", new Date().toISOString())
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (bestehend) {
-        // Der Klartext-Token existiert nur einmal, bei der Ausgabe. Ein
-        // bestehender Zugang laesst sich deshalb bestaetigen, aber sein
-        // Link nicht erneut ausgeben - dafuer muesste ein neuer her.
-        return res.json({
-          ok: true,
-          existing: true,
-          portal_access_id: bestehend.id,
-          email,
-          expires_at: bestehend.expires_at,
-          link: null,
-          mail_sent: false,
-        });
-      }
-    }
-
-    // Vorhandene Zugänge zu diesem Job zurückziehen — es gibt immer nur einen gültigen Link
-    await supabaseAdmin
-      .from("portal_access")
-      .update({ revoked_at: new Date().toISOString() })
-      .eq("job_id", job.id)
-      .is("revoked_at", null);
-
-    const token = newToken();
-
-    const { data: access, error: accessErr } = await supabaseAdmin
-      .from("portal_access")
-      .insert({
-        user_id: userId,
-        job_id: job.id,
-        client_id: job.client_id,
+    if (bestehend) {
+      // Der Klartext-Token existiert nur einmal, bei der Ausgabe. Ein
+      // bestehender Zugang laesst sich deshalb bestaetigen, aber sein
+      // Link nicht erneut ausgeben - dafuer muesste ein neuer her.
+      return {
+        ok: true,
+        status: 200,
+        existing: true,
+        portal_access_id: bestehend.id,
         email,
-        token_hash: hashToken(token),
-      })
-      .select("id, expires_at")
-      .single();
-
-    if (accessErr) {
-      return res.status(500).json({ error: accessErr.message });
+        expires_at: bestehend.expires_at,
+        link: null,
+        mail_sent: false,
+      };
     }
+  }
 
-    const link = `${PORTAL_BASE_URL}/p/${token}`;
+  // Vorhandene Zugänge zu diesem Job zurückziehen — es gibt immer nur einen gültigen Link
+  await supabaseAdmin
+    .from("portal_access")
+    .update({ revoked_at: new Date().toISOString() })
+    .eq("job_id", job.id)
+    .is("revoked_at", null);
 
-    if (mailVerschicken) {
-      await sendMailAsUser(
-        userId,
-        email,
-        `Ihr persönlicher Bereich zu „${job.title ?? "Ihrem Projekt"}“`,
-        `Hallo,
+  const token = newToken();
+
+  const { data: access, error: accessErr } = await supabaseAdmin
+    .from("portal_access")
+    .insert({
+      user_id: userId,
+      job_id: job.id,
+      client_id: job.client_id,
+      email,
+      token_hash: hashToken(token),
+    })
+    .select("id, expires_at")
+    .single();
+
+  if (accessErr) {
+    return { ok: false, status: 500, error: accessErr.message };
+  }
+
+  const link = `${PORTAL_BASE_URL}/p/${token}`;
+
+  if (mailVerschicken) {
+    await sendMailAsUser(
+      userId,
+      email,
+      `Ihr persönlicher Bereich zu „${job.title ?? "Ihrem Projekt"}“`,
+      `Hallo,
 
 unter folgendem Link finden Sie alle Informationen zu Ihrem Projekt:
 
@@ -279,30 +276,56 @@ Dort sehen Sie den aktuellen Stand, Ihren Vertrag und Ihre Rechnungen.
 Der Link ist persönlich — bitte geben Sie ihn nicht weiter.
 
 Viele Grüße`
-      );
+    );
 
-      // Ab jetzt ist der Link beim Kunden. Er darf nicht mehr stillschweigend
-      // durch einen neuen ersetzt werden.
-      await supabaseAdmin
-        .from("portal_access")
-        .update({ delivered_at: new Date().toISOString() })
-        .eq("id", access.id);
+    // Ab jetzt ist der Link beim Kunden. Er darf nicht mehr stillschweigend
+    // durch einen neuen ersetzt werden.
+    await supabaseAdmin
+      .from("portal_access")
+      .update({ delivered_at: new Date().toISOString() })
+      .eq("id", access.id);
+  }
+
+  await logPortalEvent(userId, access.id, "invited", req, {
+    job_id: job.id,
+    mail_verschickt: mailVerschicken,
+  });
+
+  // Der Klartext-Token wird hier einmalig zurückgegeben und nirgends gespeichert.
+  return {
+    ok: true,
+    status: 200,
+    portal_access_id: access.id,
+    email,
+    expires_at: access.expires_at,
+    link,
+    mail_sent: mailVerschicken,
+  };
+}
+
+portalRouter.post("/portal/invite", async (req, res) => {
+  try {
+    const { jwt, job_id, send_mail, reuse } = req.body || {};
+    if (!jwt || !job_id) {
+      return res.status(400).json({ error: "Missing required fields: jwt, job_id" });
     }
 
-    await logPortalEvent(userId, access.id, "invited", req, {
-      job_id: job.id,
-      mail_verschickt: mailVerschicken,
+    const supabaseUser = supabaseAsUser(jwt);
+
+    const { data: userData, error: userErr } = await supabaseUser.auth.getUser();
+    if (userErr || !userData?.user) {
+      return res.status(401).json({ error: "Invalid user" });
+    }
+
+    const { status, ...antwort } = await portalEinladen({
+      userId: userData.user.id,
+      jobId: job_id,
+      sendMail: send_mail,
+      reuse,
+      req,
     });
 
-    // Der Klartext-Token wird hier einmalig zurückgegeben und nirgends gespeichert.
-    return res.json({
-      ok: true,
-      portal_access_id: access.id,
-      email,
-      expires_at: access.expires_at,
-      link,
-      mail_sent: mailVerschicken,
-    });
+    return res.status(status ?? 200).json(antwort);
   } catch (e) {
     return res.status(500).json({ error: e?.message ?? String(e) });
   }
