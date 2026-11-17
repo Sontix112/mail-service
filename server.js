@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser';
 import { supabaseAdmin, supabaseAsUser } from "./lib/supabase.js";
 import { emailDomain, normalizeEmail } from "./lib/util.js";
 import { decryptPassword, encryptPassword } from "./lib/crypto.js";
-import { portalRouter, portalEinladen } from "./routes/portal.js";
+import { portalRouter } from "./routes/portal.js";
 
 dotenv.config();
 
@@ -1669,7 +1669,7 @@ app.post("/send-mail", async (req, res) => {
   });
 
   try {
-    const { jwt, mail_account_id, to, subject, body, job_id, invoice_id, contract_id } =
+    const { jwt, mail_account_id, to, subject, body, job_id, invoice_id } =
       req.body || {};
 
     if (!jwt || !mail_account_id || !to || !subject || !body) {
@@ -1761,6 +1761,11 @@ app.post("/send-mail", async (req, res) => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
         .test(v.trim());
 
+    console.log(
+      `send-mail: job_id=${job_id ?? "(keine)"}`,
+      `invoice_id=${invoice_id ?? "(keine)"}`
+    );
+
     if (invoice_id && !istUuid(invoice_id)) {
       console.error(`send-mail: invoice_id ist keine UUID: "${invoice_id}"`);
     }
@@ -1832,89 +1837,10 @@ app.post("/send-mail", async (req, res) => {
       `${Date.now() - begonnen}ms, messageId ${info?.messageId ?? "(keine)"}`
     );
 
-    // ── Vertragsmail: Vertrag als verschickt markieren, Portal einladen ──
-    // Was beim Verschicken einer Vertragsmail passieren muss, steht nur hier.
-    // Der Client sagt ueber contract_id, welcher Vertrag gemeint ist; ob er
-    // dem Nutzer und diesem Job gehoert, prueft der Server selbst.
-    let portal = null;
-    console.log(
-      `send-mail: job_id=${job_id ?? "(keine)"}`,
-      `invoice_id=${invoice_id ?? "(keine)"}`,
-      `contract_id=${contract_id ?? "(keine)"}`
-    );
-    if (contract_id && !istUuid(contract_id)) {
-      console.error(`send-mail: contract_id ist keine UUID: "${contract_id}"`);
-    }
-    // Ab hier ist die Mail schon raus. Was jetzt noch schiefgeht, darf den
-    // Versand nicht als gescheitert melden: der Nutzer wuerde es sonst erneut
-    // versuchen und die Mail ginge zweimal raus. Der Grund landet im Log und
-    // in portal.error.
-    if (istUuid(job_id) && istUuid(contract_id)) {
-      try {
-        const { data: vertrag } = await supabaseAdmin
-          .from("contracts")
-          .select("id, sent_at")
-          .eq("id", contract_id.trim())
-          .eq("job_id", job_id.trim())
-          .eq("user_id", userId)
-          .maybeSingle();
-
-        if (!vertrag) {
-          console.error(
-            `send-mail: Vertrag ${contract_id} gehoert nicht zu Job ${job_id}`
-          );
-        } else {
-          // sent_at ist ein Ereignis, kein Zustand: ein zweiter Versand
-          // verschiebt es nicht. Der Trigger haelt es ohnehin fest.
-          if (!vertrag.sent_at) {
-            await supabaseAdmin
-              .from("contracts")
-              .update({ status: "sent", sent_at: new Date().toISOString() })
-              .eq("id", vertrag.id);
-          }
-
-          // reuse: einen Zugang, den der Kunde schon hat, nicht entwerten.
-          const ergebnis = await portalEinladen({
-            userId,
-            jobId: job_id.trim(),
-            sendMail: true,
-            reuse: true,
-            req,
-          });
-
-          if (!ergebnis.ok) {
-            console.error(
-              "send-mail: Portaleinladung fehlgeschlagen:",
-              ergebnis.error
-            );
-          }
-
-          portal = {
-            ok: ergebnis.ok === true,
-            existing: ergebnis.existing === true,
-            mail_sent: ergebnis.mail_sent === true,
-            error: ergebnis.error ?? null,
-          };
-        }
-      } catch (e) {
-        console.error(
-          "send-mail: Vertrag/Portal nach dem Versand fehlgeschlagen:",
-          e?.stack ?? e?.message ?? String(e)
-        );
-        portal = {
-          ok: false,
-          existing: false,
-          mail_sent: false,
-          error: e?.message ?? String(e),
-        };
-      }
-    }
-
     return res.json({
       ok: true,
       messageId: info.messageId,
       attached: attachments.map((a) => a.filename),
-      portal,
     });
   } catch (e) {
     // Ohne Log ist ein 500 hier unauffindbar: die App meldet nur "nicht
