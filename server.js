@@ -1837,6 +1837,11 @@ app.post("/send-mail", async (req, res) => {
     // Der Client sagt ueber contract_id, welcher Vertrag gemeint ist; ob er
     // dem Nutzer und diesem Job gehoert, prueft der Server selbst.
     let portal = null;
+    console.log(
+      `send-mail: job_id=${job_id ?? "(keine)"}`,
+      `invoice_id=${invoice_id ?? "(keine)"}`,
+      `contract_id=${contract_id ?? "(keine)"}`
+    );
     if (contract_id && !istUuid(contract_id)) {
       console.error(`send-mail: contract_id ist keine UUID: "${contract_id}"`);
     }
@@ -1912,6 +1917,12 @@ app.post("/send-mail", async (req, res) => {
       portal,
     });
   } catch (e) {
+    // Ohne Log ist ein 500 hier unauffindbar: die App meldet nur "nicht
+    // verschickt", und ob die Mail trotzdem raus ist, steht nirgends.
+    console.error(
+      "send-mail: abgebrochen:",
+      e?.stack ?? e?.message ?? String(e)
+    );
     return res.status(500).json({
       error: e?.message ?? String(e),
     });
